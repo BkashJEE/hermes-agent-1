@@ -60,13 +60,36 @@ def _(rid, params: dict) -> dict:
             return text[:80] + "..."
         return text
 
-    def _latest_profile_session_row(profile_path):
+    def _session_row(db, session):
+        row = {
+            "id": session["id"],
+            "title": session.get("title") or "",
+            "preview": session.get("preview") or "",
+            "started_at": session.get("started_at") or 0,
+            "last_active": session.get("last_active") or session.get("last_activity_at") or session.get("started_at") or 0,
+            "message_count": session.get("message_count") or 0,
+        }
+        # Roster surfaces want "where the conversation IS", not where it
+        # began: override the shared first-message preview with the newest
+        # user/assistant text. Best-effort — any failure keeps the first-message
+        # preview.
+        try:
+            latest = _latest_message_preview(db, session["id"])
+            if latest:
+                row["preview"] = latest
+        except Exception:
+            pass
+        return row
+
+    def _latest_profile_session_row(profile_path, *, canonical_session_id=None, prefer_canonical=False):
         """Most recent human-facing session in a profile's state.db, or None.
 
         Mirrors session.list's deny-list (drops ``tool`` sub-agent rows and
         ``kanban`` dispatcher workers).  Best-effort: any failure (missing
         state.db, locked db, older schema) degrades to None rather than
-        failing the whole profiles.list call.
+        failing the whole profiles.list call. ``prefer_canonical`` is for a
+        roster that owns one named conversation per profile: never substitute a
+        recent automation/CLI session when that canonical conversation is absent.
         """
         try:
             from pathlib import Path
@@ -79,30 +102,19 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
+                if prefer_canonical:
+                    if not canonical_session_id:
+                        return None
+                    canonical = db.get_session(canonical_session_id)
+                    if not canonical or canonical.get("archived"):
+                        return None
+                    return _session_row(db, canonical)
                 for s in db.list_sessions_rich(
                     source=None, limit=20, order_by_last_active=True, compact_rows=True
                 ):
                     if (s.get("source") or "").strip().lower() in deny:
                         continue
-                    row = {
-                        "id": s["id"],
-                        "title": s.get("title") or "",
-                        "preview": s.get("preview") or "",
-                        "started_at": s.get("started_at") or 0,
-                        "last_active": s.get("last_active") or s.get("started_at") or 0,
-                        "message_count": s.get("message_count") or 0,
-                    }
-                    # Roster surfaces want "where the conversation IS", not
-                    # where it began: override the shared first-message
-                    # preview with the newest user/assistant text. Best-
-                    # effort — any failure keeps the first-message preview.
-                    try:
-                        latest = _latest_message_preview(db, s["id"])
-                        if latest:
-                            row["preview"] = latest
-                    except Exception:
-                        pass
-                    return row
+                    return _session_row(db, s)
             finally:
                 try:
                     db.close()
@@ -116,6 +128,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.profiles import list_profiles
 
         include_sessions = is_truthy_value(params.get("include_sessions", True))
+        prefer_bot_chat = is_truthy_value(params.get("prefer_bot_chat", False))
         out = []
         for p in list_profiles():
             row = {
@@ -127,12 +140,7 @@ def _(rid, params: dict) -> dict:
                 "description": getattr(p, "description", "") or "",
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
-            if include_sessions:
-                row["last_session"] = _latest_profile_session_row(p.path)
-
-            # Client-agnostic UI metadata (avatars, accent colors, pinned
-            # order, …) — stored server-side in profile.yaml so every
-            # machine connecting to this gateway paints the same roster.
+            ui_meta = None
             try:
                 import yaml as _yaml
                 from pathlib import Path as _Path
@@ -141,11 +149,20 @@ def _(rid, params: dict) -> dict:
                 if meta_path.is_file():
                     with open(meta_path, "r", encoding="utf-8") as f:
                         raw_meta = _yaml.safe_load(f) or {}
-                    ui_meta = raw_meta.get("ui_meta")
-                    if isinstance(ui_meta, dict) and ui_meta:
+                    candidate = raw_meta.get("ui_meta")
+                    if isinstance(candidate, dict) and candidate:
+                        ui_meta = candidate
                         row["ui_meta"] = ui_meta
             except Exception:
                 pass
+            if include_sessions:
+                bot_meta = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+                canonical = bot_meta.get("chat") if isinstance(bot_meta, dict) else None
+                row["last_session"] = _latest_profile_session_row(
+                    p.path,
+                    canonical_session_id=canonical,
+                    prefer_canonical=prefer_bot_chat,
+                )
 
             # Cheap existence flag so roster UIs know to profiles.get_asset
             # without a probe call per profile per paint.
