@@ -1925,6 +1925,19 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
 // so opening the tab doesn't fire dozens of 2MB fetches at once.
 const PET_FRAME_W = 192
 const PET_FRAME_H = 208
+const PET_PAGE_SIZE = 6
+
+function paginatePets(pets, page) {
+  const pageCount = Math.ceil(pets.length / PET_PAGE_SIZE)
+  const requestedPage = Number.isFinite(page) ? Math.trunc(page) : 0
+  const currentPage = Math.min(Math.max(requestedPage, 0), Math.max(0, pageCount - 1))
+  return {
+    pageCount,
+    currentPage,
+    visible: pets.slice(currentPage * PET_PAGE_SIZE, (currentPage + 1) * PET_PAGE_SIZE)
+  }
+}
+
 const petFrameCache = new Map()
 let petFetchActive = 0
 const petFetchQueue = []
@@ -2014,9 +2027,7 @@ function PetTab({ image, onImage }) {
     staleTime: 300000
   })
   const [query, setQuery] = useState('')
-  // Windowed rendering: the gallery is 4500+ pets — mounting an <img> per pet
-  // froze the dialog. Render `limit` at a time and grow on scroll-to-bottom.
-  const [limit, setLimit] = useState(24)
+  const [page, setPage] = useState(0)
   const pets = data?.pets ?? []
 
   if (isLoading) {
@@ -2042,15 +2053,7 @@ function PetTab({ image, onImage }) {
     const rank = pet => (pet.installed ? 0 : pet.curated ? 1 : 2)
     return rank(a) - rank(b)
   })
-  const visible = ranked.slice(0, limit)
-
-  const onScroll = event => {
-    const el = event.currentTarget
-
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120 && limit < ranked.length) {
-      setLimit(prev => Math.min(prev + 24, ranked.length))
-    }
-  }
+  const { pageCount, currentPage, visible } = paginatePets(ranked, page)
 
   return jsxs('div', {
     className: 'grid w-full gap-2',
@@ -2065,7 +2068,7 @@ function PetTab({ image, onImage }) {
         value: query,
         onChange: event => {
           setQuery(event.target.value)
-          setLimit(24)
+          setPage(0)
         }
       }),
       image && selectedSlug
@@ -2087,14 +2090,16 @@ function PetTab({ image, onImage }) {
             children: 'No pets match.'
           })
         : jsxs('div', {
-            onScroll,
-            style: { maxHeight: 220, overflowY: 'auto' },
+            // Keep a small inset so the selected tile's focus ring is never
+            // clipped at the edge of the gallery or by the dialog viewport.
+            style: { padding: 2 },
             children: [
               jsx('div', {
                 style: {
                   display: 'grid',
                   gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                  gap: '6px'
+                  gap: '6px',
+                  padding: 2
                 },
                 children: visible.map(pet =>
                   jsxs(
@@ -2131,10 +2136,33 @@ function PetTab({ image, onImage }) {
                   )
                 )
               }),
-              limit < ranked.length
-                ? jsx('div', {
-                    className: 'py-2 text-center text-[0.65rem] text-(--ui-text-quaternary)',
-                    children: `Scroll for more (${limit} of ${ranked.length})`
+              pageCount > 1
+                ? jsxs('div', {
+                    className: 'flex items-center justify-center gap-2 pt-1',
+                    children: [
+                      jsx(Button, {
+                        type: 'button',
+                        variant: 'ghost',
+                        size: 'xs',
+                        disabled: currentPage === 0,
+                        'aria-label': 'Previous pets',
+                        onClick: () => setPage(prev => Math.max(0, prev - 1)),
+                        children: 'Previous'
+                      }),
+                      jsx('span', {
+                        className: 'text-[0.65rem] text-(--ui-text-quaternary)',
+                        children: `${currentPage + 1} / ${pageCount}`
+                      }),
+                      jsx(Button, {
+                        type: 'button',
+                        variant: 'ghost',
+                        size: 'xs',
+                        disabled: currentPage === pageCount - 1,
+                        'aria-label': 'Next pets',
+                        onClick: () => setPage(prev => Math.min(pageCount - 1, prev + 1)),
+                        children: 'Next'
+                      })
+                    ]
                   })
                 : null
             ]
@@ -5307,6 +5335,23 @@ function selectRoutineJobs(data, error, lastJobs, bot) {
   }
 }
 
+/**
+ * Why the Routines pane can be empty while the bot's cron store has jobs.
+ *
+ * The pane only shows jobs namespaced `[bot:<name>]` for the active bot. When
+ * jobs exist in the store but none carry that tag, the user is left staring at
+ * the generic empty state with no hint that cronjobs are present but hidden.
+ * Return a short explanation string in that case, or null when the store is
+ * genuinely empty (or the active bot's tagged jobs are already shown).
+ */
+function routineFilterHint(all, jobs) {
+  if (jobs.length !== 0 || !Array.isArray(all) || all.length === 0) {
+    return null
+  }
+  return 'Cronjobs exist in this profile but none are tagged for this bot. ' +
+    'Name a job "[bot:<name>] …" to show it here, or see them in Cron below.'
+}
+
 function normalizedProfileName(profile) {
   return typeof profile === 'string' ? profile.trim().toLowerCase() : ''
 }
@@ -5852,6 +5897,7 @@ function RoutinesPane() {
   const staleNotice = error && !view.live && view.all.length
     ? 'Could not refresh cronjobs. Showing the last list we had.'
     : null
+  const filterHint = routineFilterHint(view.all, jobs)
 
   return jsxs('div', {
     className: 'flex h-full flex-col',
@@ -5932,13 +5978,15 @@ function RoutinesPane() {
                 jsx(Codicon, { name: 'calendar', className: 'text-[1.6rem] text-(--ui-text-quaternary)' }),
                 jsx('div', {
                   className: 'text-xs leading-5 text-(--ui-text-tertiary)',
-                  children: 'Cronjobs are recurring tasks this agent runs on a schedule.'
+                  children: filterHint
+                    ? filterHint
+                    : 'Cronjobs are recurring tasks this agent runs on a schedule.'
                 }),
                 jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
                   onClick: openCreate,
-                  children: 'Create Cronjob'
+                  children: filterHint ? 'Create a cronjob for this bot' : 'Create Cronjob'
                 })
               ]
             })
