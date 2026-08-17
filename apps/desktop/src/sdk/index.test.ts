@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
-import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
+import { $sessions, setActiveSessionId, setAwaitingResponse, setBusy, setSessions } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 describe('host.state turn flags', () => {
@@ -105,5 +105,37 @@ describe('host.state turn flags', () => {
     expect(host.state.awaitingResponse.get()).toBe(false)
 
     $sessionTiles.set([])
+  })
+})
+
+describe('host.hideSessionsFromRecents', () => {
+  afterEach(() => setSessions([]))
+
+  it('evicts matching durable ids and lineage roots within the owning profile', () => {
+    setSessions([
+      { id: 'visible', profile: 'default', title: 'Visible' },
+      { id: 'shared-id', profile: 'default', title: 'Keep same id in default' },
+      { id: 'shared-id', profile: 'jarvis', title: 'Bot Chat' },
+      { id: 'hidden-tip', _lineage_root_id: 'hidden-root', profile: 'sabiska', title: 'Bot Chat' }
+    ] as never)
+
+    host.hideSessionsFromRecents([
+      { profile: 'jarvis', sessionId: 'shared-id' },
+      { profile: 'sabiska', sessionId: 'hidden-root' }
+    ])
+
+    expect($sessions.get().map(session => [session.profile, session.id])).toEqual([
+      ['default', 'visible'],
+      ['default', 'shared-id']
+    ])
+  })
+
+  it('preserves the existing array when no id matches', () => {
+    const sessions = [{ id: 'visible', title: 'Visible' }] as never
+    setSessions(sessions)
+
+    host.hideSessionsFromRecents([{ profile: 'default', sessionId: 'missing' }])
+
+    expect($sessions.get()).toBe(sessions)
   })
 })

@@ -20,6 +20,7 @@ class FakeSessionDB:
 def test_set_stored_hidden_targets_profile_scoped_db(monkeypatch):
     db = FakeSessionDB({"stored-bot-chat"})
     seen_params: list[dict] = []
+    events: list[tuple[str, dict]] = []
 
     @contextmanager
     def profile_db(params):
@@ -27,6 +28,7 @@ def test_set_stored_hidden_targets_profile_scoped_db(monkeypatch):
         yield db
 
     monkeypatch.setattr(server, "_profile_db", profile_db)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: events.append((event, payload)))
 
     response = server._methods["session.set_stored_hidden"](
         1,
@@ -37,16 +39,19 @@ def test_set_stored_hidden_targets_profile_scoped_db(monkeypatch):
     assert response["result"] == {"hidden": True, "session_id": "stored-bot-chat"}
     assert db.calls == [("stored-bot-chat", True)]
     assert seen_params == [{"session_id": "stored-bot-chat", "profile": "researcher", "hidden": True}]
+    assert events == [("sessions.changed", {})]
 
 
 def test_set_stored_hidden_rejects_unknown_session(monkeypatch):
     db = FakeSessionDB(set())
+    events: list[tuple[str, dict]] = []
 
     @contextmanager
     def profile_db(_params):
         yield db
 
     monkeypatch.setattr(server, "_profile_db", profile_db)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: events.append((event, payload)))
 
     response = server._methods["session.set_stored_hidden"](
         2,
@@ -55,3 +60,4 @@ def test_set_stored_hidden_rejects_unknown_session(monkeypatch):
 
     assert response["error"]["code"] == 4007
     assert db.calls == [("missing", False)]
+    assert events == []

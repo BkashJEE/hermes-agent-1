@@ -53,7 +53,8 @@ import {
   $currentCwd,
   $currentModel,
   $gatewayState,
-  $selectedStoredSessionId
+  $selectedStoredSessionId,
+  setSessions
 } from '@/store/session'
 import {
   $focusedRuntimeId,
@@ -433,6 +434,39 @@ export const host = {
     method: string,
     params: Record<string, unknown> = {}
   ): Promise<T> => requestPluginProfile<T>(route, method, params),
+
+  /** Remove backend-confirmed hidden stored sessions from the recents cache.
+   *  The ordinary refresh deliberately preserves the focused/working row when
+   *  it is absent from a page; a visibility mutation is an explicit tombstone,
+   *  not a paging or persistence race. Unhide is authoritative on the next
+   *  sessions.changed refresh, so this door is intentionally hide-only. */
+  hideSessionsFromRecents: (sessions: readonly { profile: string; sessionId: string }[]): void => {
+    const hiddenKeys = new Set(
+      sessions
+        .map(({ profile, sessionId }) => {
+          const id = sessionId.trim()
+
+          return id ? `${normalizeProfileKey(profile)}\u0000${id}` : ''
+        })
+        .filter(Boolean)
+    )
+
+    if (!hiddenKeys.size) {
+      return
+    }
+
+    setSessions(previous => {
+      const next = previous.filter(session => {
+        const profile = normalizeProfileKey(session.profile)
+        const idKey = `${profile}\u0000${session.id}`
+        const lineageKey = session._lineage_root_id ? `${profile}\u0000${session._lineage_root_id}` : ''
+
+        return !hiddenKeys.has(idKey) && (!lineageKey || !hiddenKeys.has(lineageKey))
+      })
+
+      return next.length === previous.length ? previous : next
+    })
+  },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */

@@ -269,28 +269,159 @@ async function saveBotMeta(name, patch) {
 }
 
 /** Flip the "hide Bot Chats from the sidebar" pref, persist it, and reconcile
- *  every known canonical chat via the core session.set_hidden RPC so the change
- *  applies to already-created Bot Chats (not just future ones). Feature-detected:
- *  older gateways lack session.set_hidden and simply keep the chats visible. */
-async function setHideBotChats(hidden) {
-  $hideBotChats.set(hidden)
+ * every known canonical chat via the stored-session RPC. `$botMeta.chat` holds
+ * the durable stored ID, not a live runtime ID, so `session.set_hidden` is the
+ * wrong contract once a runtime has been reaped. */
+function isSessionNotFoundError(error) {
+  const code = error && typeof error === 'object' ? error.code : undefined
+  const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error || '')
+  return code === 4007 || /session not found/i.test(message)
+}
 
-  try {
-    Promise.resolve(pluginCtx?.storage?.set?.('hide-bot-chats', hidden)).catch(() => undefined)
-  } catch {
-    /* storage unavailable — pref holds for this window only */
+function isUnknownMethodError(error) {
+  const code = error && typeof error === 'object' ? error.code : undefined
+  const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error || '')
+  return code === -32601 || /unknown method/i.test(message)
+}
+
+async function setHideBotChats(hidden) {
+  const previous = $hideBotChats.get()
+  const persistPreference = value => {
+    try {
+      Promise.resolve(pluginCtx?.storage?.set?.('hide-bot-chats', value)).catch(() => undefined)
+    } catch {
+      /* storage unavailable — pref holds for this window only */
+    }
   }
 
-  const meta = $botMeta.get()
-  const ids = Object.values(meta)
-    .map(m => m && m.chat)
-    .filter(Boolean)
+  const chats = Object.entries($botMeta.get())
+    .map(([profile, meta]) => ({ profile, sessionId: meta && meta.chat }))
+    .filter(chat => Boolean(chat.sessionId))
 
-  await Promise.all(
-    ids.map(sid =>
-      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden })).catch(() => undefined)
+  if (!chats.length) {
+    $hideBotChats.set(hidden)
+    persistPreference(hidden)
+    return
+  }
+
+  let profileRoutes = []
+  if (typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
+    try {
+      const routes = await host.profileRoutes()
+      profileRoutes = Array.isArray(routes) ? routes : []
+    } catch {
+      // Older Desktop shells keep the active-gateway compatibility path below.
+    }
+  }
+
+  const routesFor = chat => profileRoutes.filter(route => route?.targetProfile === chat.profile)
+  const requestOnRoute = (route, chat, method, params) =>
+    route
+      ? host.requestProfile(route, method, params)
+      : host.request(method, { profile: chat.profile, ...params })
+
+  const writeOnRoute = async (route, chat, value) => {
+    try {
+      await requestOnRoute(route, chat, 'session.set_stored_hidden', {
+        session_id: chat.sessionId,
+        hidden: value
+      })
+      return { applied: true, compatibilityMiss: false, unavailable: false }
+    } catch (error) {
+      if (isSessionNotFoundError(error)) {
+        return { applied: false, compatibilityMiss: false, unavailable: true }
+      }
+      if (!isUnknownMethodError(error)) {
+        throw error
+      }
+    }
+
+    try {
+      await requestOnRoute(route, chat, 'session.set_hidden', {
+        session_id: chat.sessionId,
+        hidden: value
+      })
+      return { applied: true, compatibilityMiss: false, unavailable: false }
+    } catch (error) {
+      if (!isSessionNotFoundError(error) && !isUnknownMethodError(error)) {
+        throw error
+      }
+      return { applied: false, compatibilityMiss: true, unavailable: false }
+    }
+  }
+
+  const writeVisibility = async (chat, value) => {
+    const routes = routesFor(chat)
+    const destinations = routes.length ? routes : [null]
+    const routeOutcomes = await Promise.allSettled(
+      destinations.map(route => writeOnRoute(route, chat, value))
     )
+    const applied = routeOutcomes.find(outcome => outcome.status === 'fulfilled' && outcome.value.applied)
+
+    if (applied) {
+      return applied.value
+    }
+
+    const hardFailure = routeOutcomes.find(outcome => outcome.status === 'rejected')
+    if (hardFailure) {
+      throw hardFailure.reason
+    }
+
+    const compatibilityMiss = routeOutcomes.some(
+      outcome => outcome.status === 'fulfilled' && outcome.value.compatibilityMiss
+    )
+    return { applied: false, compatibilityMiss, unavailable: !compatibilityMiss }
+  }
+
+  const outcomes = await Promise.allSettled(chats.map(chat => writeVisibility(chat, hidden)))
+  const changedChats = chats.filter(
+    (_, index) => outcomes[index]?.status === 'fulfilled' && outcomes[index].value.applied
   )
+  const compatibilityMisses = outcomes.filter(
+    outcome => outcome.status === 'fulfilled' && outcome.value.compatibilityMiss
+  ).length
+  const unavailable = outcomes.filter(
+    outcome => outcome.status === 'fulfilled' && outcome.value.unavailable
+  ).length
+  const failed = outcomes.filter(outcome => outcome.status === 'rejected').length
+
+  if (failed) {
+    const rollback = await Promise.allSettled(changedChats.map(chat => writeVisibility(chat, previous)))
+    const rollbackFailed = rollback.filter(
+      outcome => outcome.status === 'rejected' || (outcome.status === 'fulfilled' && !outcome.value.applied)
+    ).length
+    $hideBotChats.set(previous)
+    persistPreference(previous)
+    host.notify({
+      kind: 'error',
+      message: `Could not ${hidden ? 'hide' : 'show'} ${failed} Bot Chat${failed === 1 ? '' : 's'}. Preference unchanged.${
+        rollbackFailed ? ` ${rollbackFailed} rollback${rollbackFailed === 1 ? '' : 's'} failed; refresh Sessions.` : ''
+      }`
+    })
+    return
+  }
+
+  $hideBotChats.set(hidden)
+  persistPreference(hidden)
+  if (hidden && changedChats.length && typeof host.hideSessionsFromRecents === 'function') {
+    host.hideSessionsFromRecents(changedChats)
+  }
+  if (compatibilityMisses) {
+    host.notify({
+      kind: 'warning',
+      message: `Preference saved. Update the Hermes backend to reconcile ${compatibilityMisses} existing Bot Chat${
+        compatibilityMisses === 1 ? '' : 's'
+      }.`
+    })
+  }
+  if (unavailable) {
+    host.notify({
+      kind: 'warning',
+      message: `Preference saved. ${unavailable} existing Bot Chat${
+        unavailable === 1 ? ' is' : 's are'
+      } unavailable on this connection. Activate the owning source to reconcile.`
+    })
+  }
 }
 
 /** Fetch server-side avatars for roster rows flagged has_avatar when the

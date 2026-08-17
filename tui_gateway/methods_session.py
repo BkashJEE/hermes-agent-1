@@ -1236,6 +1236,7 @@ def _(rid, params: dict) -> dict:
 
     if not changed:
         return _err(rid, 4007, "session not found")
+    _broadcast_global_event("sessions.changed", {})
     return _ok(rid, {"hidden": hidden, "session_id": target})
 
 

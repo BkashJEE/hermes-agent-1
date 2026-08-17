@@ -42,3 +42,13 @@ def test_hidden_excluded_by_default_included_on_request(db):
     assert db.get_session("secret")["hidden"] == 0
     unhidden_ids = {s["id"] for s in db.list_sessions_rich(min_message_count=1)}
     assert unhidden_ids == {"visible", "secret"}
+
+
+def test_hidden_setter_is_idempotent_and_distinguishes_missing(db):
+    db.create_session("existing", source="cli")
+
+    assert db.set_session_hidden("existing", True) is True
+    assert db.set_session_hidden("existing", True) is True
+    assert db.set_session_hidden("existing", False) is True
+    assert db.set_session_hidden("existing", False) is True
+    assert db.set_session_hidden("missing", True) is False
