@@ -1211,6 +1211,34 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5007, str(e))
 
 
+@method("session.set_stored_hidden")
+def _(rid, params: dict) -> dict:
+    """Set a stored session's durable ``hidden`` flag by its stable ID.
+
+    ``session.set_hidden`` deliberately addresses an in-memory runtime session
+    so a just-created draft can retain a deferred visibility intent. Desktop
+    plugins can retain the stored ID after that runtime session has been reaped,
+    so they need this profile-scoped database operation instead of targeting a
+    non-existent runtime ID.
+    """
+    target = str(params.get("session_id") or "").strip()
+    if not target:
+        return _err(rid, 4006, "session_id required")
+
+    hidden = is_truthy_value(params.get("hidden", True))
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            changed = db.set_session_hidden(target, hidden)
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+    if not changed:
+        return _err(rid, 4007, "session not found")
+    return _ok(rid, {"hidden": hidden, "session_id": target})
+
+
 @method("message.react")
 def _(rid, params: dict) -> dict:
     """Set or clear one author's emoji reaction on a persisted message.
