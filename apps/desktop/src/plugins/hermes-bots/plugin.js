@@ -9403,7 +9403,7 @@ function openGroupChat(group) {
  *  (markdown flattened), relative time of the last activity, and the
  *  needs-you badge on the row itself. Sorts into the same recency ordering
  *  as bot rows; clicking opens the room in the main chat window. */
-function GroupRow({ active, group, members, needsYou, onOpen }) {
+function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [] }
@@ -9419,7 +9419,7 @@ function GroupRow({ active, group, members, needsYou, onOpen }) {
     : 'No messages yet — say hi to the room'
   const faces = members.slice(0, 3)
 
-  return jsxs('button', {
+  const row = jsxs('button', {
     type: 'button',
     onClick: () => {
       haptic('tap')
@@ -9508,6 +9508,26 @@ function GroupRow({ active, group, members, needsYou, onOpen }) {
       })
     ]
   })
+
+  return jsxs(ContextMenu, {
+    children: [
+      jsx(ContextMenuTrigger, { asChild: true, children: row }),
+      jsxs(ContextMenuContent, {
+        children: [
+          jsx(ContextMenuItem, {
+            onSelect: () => onOpen(group),
+            children: 'Open Group Chat'
+          }),
+          jsx(ContextMenuSeparator, {}),
+          jsx(ContextMenuItem, {
+            className: 'text-destructive focus:text-destructive',
+            onSelect: () => onDisband({ name: group, members }),
+            children: 'Delete Group'
+          })
+        ]
+      })
+    ]
+  })
 }
 
 function BotsPane() {
@@ -9519,6 +9539,7 @@ function BotsPane() {
   const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [deletingGroup, setDeletingGroup] = useState(null)
   const [grouping, setGrouping] = useState(null)
   const [query, setQuery] = useState('')
   const activityToasts = useValue($activityToasts)
@@ -9857,7 +9878,8 @@ function BotsPane() {
                               group: row.name,
                               members: row.members,
                               needsYou: Boolean(groupNeedsYou[row.name]),
-                              onOpen: openGroupChat
+                              onOpen: openGroupChat,
+                              onDisband: setDeletingGroup
                             },
                             `group:${row.name}`
                           )
@@ -9931,6 +9953,23 @@ function BotsPane() {
           await deleteBot(deleting)
           await refetch()
           host.notify({ kind: 'success', message: `Deleted profile ${name}` })
+        }
+      }),
+      jsx(ConfirmDialog, {
+        open: Boolean(deletingGroup),
+        title: 'Delete group chat?',
+        description: deletingGroup
+          ? `This removes “${deletingGroup.name}” from its bots and clears the shared room log. The bots and their individual chats are kept.`
+          : null,
+        destructive: true,
+        confirmLabel: 'Delete Group',
+        busyLabel: 'Deleting…',
+        doneLabel: 'Deleted',
+        onClose: () => setDeletingGroup(null),
+        onConfirm: async () => {
+          if (!deletingGroup) return
+          await disbandGroupChat(deletingGroup.name, deletingGroup.members)
+          host.notify({ kind: 'success', message: `Deleted group “${deletingGroup.name}”` })
         }
       })
     ]
