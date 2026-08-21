@@ -4174,7 +4174,13 @@ async function deliverRemoteRosterMentions(bots, userText, sender) {
  *  duplicate keys make React reconciliation repeat whole blocks of the list
  *  on every poll repaint (the Aug 2026 dupe-bots smear). */
 function botRosterKey(bot) {
-  return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
+  const name = bot?.name
+
+  if (!name) {
+    return null
+  }
+
+  return `${bot?.connectionId || 'legacy'}::${name}`
 }
 
 // ── cross-connection routing ─────────────────────────────────────────────────
@@ -4718,7 +4724,7 @@ function groupChatMemberBots(group, roster, metaByName) {
     for (const descriptor of stored) {
       const key = botRosterKey(descriptor)
 
-      if (seated.has(key)) {
+      if (!key || seated.has(key)) {
         continue
       }
 
@@ -4737,7 +4743,7 @@ function groupChatMemberBots(group, roster, metaByName) {
   for (const descriptor of stored) {
     const key = botRosterKey(descriptor)
 
-    if (seated.has(key)) {
+    if (!key || seated.has(key)) {
       continue
     }
 
@@ -4752,7 +4758,7 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  source's row may become remote after a connection switch, so retaining it
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
-  return (bots || []).map(bot => {
+  return (bots || []).filter(bot => botRosterKey(bot)).map(bot => {
     // Keep the friendly identity on the stored descriptor: after a
     // connection switch the live roster row may be gone, and renamed-tag
     // mentions must still resolve against the persisted member.
@@ -4790,8 +4796,8 @@ async function replaceGroupChatMembers(group, bots) {
     unique.push(bot)
   }
 
-  if (unique.length < 2 || unique.length > GROUP_CHAT_MAX_MEMBERS) {
-    throw new Error(`Group chats require 2–${GROUP_CHAT_MAX_MEMBERS} bots`)
+  if (!unique.length || unique.length > GROUP_CHAT_MAX_MEMBERS) {
+    throw new Error(`Group chats require 1–${GROUP_CHAT_MAX_MEMBERS} bots`)
   }
 
   const metaByName = $botMeta.get()
@@ -4804,11 +4810,72 @@ async function replaceGroupChatMembers(group, bots) {
     }
   }
 
-  await Promise.all(
-    [...affectedLocal].map(name =>
-      saveBotMeta(name, groupMembershipPatch($botMeta.get()[name], group, nextLocal.has(name)))
-    )
+  const names = [...affectedLocal]
+  const writes = await Promise.allSettled(
+    names.map(name => saveBotMeta(name, groupMembershipPatch(metaByName[name], group, nextLocal.has(name))))
   )
+  const failed = writes
+    .map((result, index) => ({ result, name: names[index] }))
+    .filter(({ result }) => result.status === 'rejected' || result.value?.serverOutcome === 'failed')
+
+  if (failed.length) {
+    // Only profiles whose new metadata was confirmed remotely need a remote
+    // rollback. A profile that explicitly rejected the write is already at the
+    // old remote value; trying to "restore" it would make a failed rollback
+    // look like a remote inconsistency that this operation did not create.
+    const persistedNames = new Set(
+      writes
+        .map((result, index) => ({ result, name: names[index] }))
+        .filter(({ result }) => result.status === 'fulfilled' && result.value?.serverOutcome === 'persisted')
+        .map(({ name }) => name)
+    )
+    const rollbackNames = names.filter(name => persistedNames.has(name))
+    const rollbackResults = await Promise.allSettled(
+      rollbackNames.map(name => {
+        const prior = metaByName[name] || {}
+        return saveBotMeta(name, {
+          groups: Array.isArray(prior.groups) ? prior.groups : [],
+          group: prior.group || null
+        })
+      })
+    )
+    const rollbackFailures = rollbackResults
+      .map((result, index) => ({ result, name: rollbackNames[index] }))
+      .filter(({ result }) => result.status === 'rejected' || result.value?.serverOutcome !== 'persisted')
+
+    // saveBotMeta is a merge API for normal edits. Restore the exact snapshot
+    // locally as the final reconciliation step so profiles that had no
+    // explicit group fields are not left with synthetic empty projections.
+    $botMeta.set(metaByName)
+    try {
+      Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', metaByName)).catch(() => undefined)
+    } catch {
+      /* local atom is still reconciled for this window */
+    }
+
+    const details = failed.map(({ name, result }) => {
+      if (result.status === 'rejected') {
+        return `${name}: ${result.reason?.message || 'write failed'}`
+      }
+
+      return `${name}: server rejected the write`
+    })
+
+    if (rollbackFailures.length) {
+      const rollbackDetails = rollbackFailures.map(({ name, result }) => {
+        if (result.status === 'rejected') {
+          return `${name}: ${result.reason?.message || 'rollback failed'}`
+        }
+
+        return `${name}: rollback was not confirmed by the server`
+      })
+      throw new Error(
+        `Could not save group members (${details.join(', ')}); rollback could not be confirmed (${rollbackDetails.join(', ')}), remote metadata may be inconsistent`
+      )
+    }
+
+    throw new Error(`Could not save group members (${details.join(', ')}); changes were rolled back`)
+  }
 
   updateGroupChat(group, room => {
     room.members = durableGroupChatMembers(unique)
@@ -5799,14 +5866,36 @@ async function harvestStrandedGroupReply(group, member) {
 async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+  const activeMembers = () => {
+    const room = $groupChats.get()[group] || {}
+
+    // Modern rooms persist the complete source-qualified roster. Re-read it
+    // at every round and member boundary so removing a bot during an active
+    // turn cannot schedule that bot again later in the same drive.
+    if (Array.isArray(room.members)) {
+      const activeKeys = new Set(room.members.map(botRosterKey).filter(Boolean))
+      return members.filter(member => {
+        const key = botRosterKey(member)
+        return key && activeKeys.has(key)
+      })
+    }
+
+    return members
+  }
   let posted = 0
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+      const roundMembers = activeMembers()
+
+      if (!roundMembers.length) {
+        return
+      }
+
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
       // late, never lost.
-      for (const member of members) {
+      for (const member of roundMembers) {
         if (!isCurrent()) {
           recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
           return
@@ -5829,12 +5918,12 @@ async function runGroupChatRounds(group, members, thread) {
       // value shape, since markers are a bare number pre-thread or
       // {before, thread} post-thread.
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
-      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
+      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, roundMembers), round)
         .filter(member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member)))
       let spokeThisRound = 0
 
       for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || !activeMembers().some(active => botRosterKey(active) === botRosterKey(member))) {
           if (!isCurrent()) {
             recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
           }
@@ -9555,42 +9644,61 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
   const [checked, setChecked] = useState({})
+  const [query, setQuery] = useState('')
+  const [workingGroup, setWorkingGroup] = useState(group)
 
   const candidatesByKey = new Map()
 
   for (const bot of members || []) {
-    candidatesByKey.set(botRosterKey(bot), bot)
+    const key = botRosterKey(bot)
+
+    if (key) {
+      candidatesByKey.set(key, bot)
+    }
   }
 
   // Prefer a live roster row over its persisted descriptor while retaining
   // offline members that exist only in the room record.
   for (const bot of roster || []) {
-    candidatesByKey.set(botRosterKey(bot), bot)
+    const key = botRosterKey(bot)
+
+    if (key) {
+      candidatesByKey.set(key, bot)
+    }
   }
 
   const candidates = [...candidatesByKey.values()]
   const selected = candidates.filter(bot => checked[botRosterKey(bot)])
+  const visible = filterBots(candidates, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
-      setChecked(Object.fromEntries((members || []).map(bot => [botRosterKey(bot), true])))
+      setChecked(Object.fromEntries((members || []).filter(bot => botRosterKey(bot)).map(bot => [botRosterKey(bot), true])))
+      setQuery('')
+      setWorkingGroup(group)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
 
   const save = async () => {
-    if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
-      host.notifyError(new Error(`Group chats require 2–${GROUP_CHAT_MAX_MEMBERS} bots`), 'Could not save group')
+    if (!selected.length || selected.length > GROUP_CHAT_MAX_MEMBERS) {
+      host.notifyError(new Error(`Group chats require 1–${GROUP_CHAT_MAX_MEMBERS} bots`), 'Could not save group')
       return
     }
 
-    const finalName = await renameGroupChat(group, name, members)
+    let finalName = workingGroup
 
-    if (finalName === null) {
-      return // collision — dialog stays open for a different name
+    if (workingGroup === group) {
+      finalName = await renameGroupChat(group, name, members)
+
+      if (finalName === null) {
+        return // collision — dialog stays open for a different name
+      }
+
+      setWorkingGroup(finalName)
     }
 
     if (image !== current) {
@@ -9611,6 +9719,11 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
     }
   }
 
+  const disband = async () => {
+    await disbandGroupChat(workingGroup, members)
+    onClose()
+  }
+
   return jsx(Dialog, {
     open,
     onOpenChange: value => {
@@ -9625,7 +9738,7 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
           children: [
             jsx(DialogTitle, { children: 'Group settings' }),
             jsx(DialogDescription, {
-              children: `Rename the group, set a room picture, or choose 2–${GROUP_CHAT_MAX_MEMBERS} members.`
+              children: `Rename the group, set a room picture, or choose 1–${GROUP_CHAT_MAX_MEMBERS} members.`
             })
           ]
         }),
@@ -9648,8 +9761,15 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
             onChange: event => setName(event.target.value)
           })
         }),
+        jsx(SearchField, {
+          'aria-label': 'Search group members',
+          containerClassName: 'w-full',
+          inputClassName: 'w-full',
+          placeholder: 'Search members…',
+          value: query,
+          onChange: setQuery
+        }),
         jsxs('div', {
-          className: 'grid gap-1.5',
           children: [
             jsx('div', {
               className: 'text-xs font-medium text-(--ui-text-secondary)',
@@ -9660,7 +9780,7 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
               children: jsx('div', {
                 'aria-label': 'Group members',
                 className: 'grid gap-0.5 p-1.5',
-                children: candidates.map(bot => {
+                children: visible.map(bot => {
                   const key = botRosterKey(bot)
                   const isChecked = Boolean(checked[key])
                   const disabled = !isChecked && atCap
@@ -9694,8 +9814,11 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
         jsxs(DialogFooter, {
           children: [
             jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Cancel' }),
+            selected.length === 0
+              ? jsx(Button, { variant: 'destructive', onClick: () => void disband(), children: 'Disband' })
+              : null,
             jsx(Button, {
-              disabled: !name.trim() || selected.length < 2,
+              disabled: !name.trim() || !selected.length,
               onClick: () => void save(),
               children: `Save (${selected.length})`
             })

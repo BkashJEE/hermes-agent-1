@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false, failedMetaNames = [], failedMetaCalls = {} } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => {
@@ -29,6 +29,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
   const titleToStored = new Map()
   const sharedUiMeta = {}
   const uiMetaRevisions = {}
+  const metaCallCounts = new Map()
   let sessionSequence = 0
   // busyUntilResumeCall[profile] = N: this profile's session.resume reports
   // inflight/running for its first N calls, then flips to done — simulating
@@ -71,6 +72,11 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
           }
         }
         if (method === 'profiles.configure') {
+          const metaCall = (metaCallCounts.get(params.name) || 0) + 1
+          metaCallCounts.set(params.name, metaCall)
+          if (failedMetaNames.includes(params.name) || failedMetaCalls[params.name]?.includes(metaCall)) {
+            return { applied: { ui_meta: false, ui_meta_conflicts: { simulated: true } } }
+          }
           if (conflictOnce && !injectedConflict) {
             injectedConflict = true
             sharedUiMeta['hermes-bots-groups'] = {
@@ -196,7 +202,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, durableGroupChatMembers, filterBots, botRosterKey, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1170,12 +1176,16 @@ test('existing group members can be replaced without stale profile metadata rese
 
   gc.$botMeta.set({
     research: { groups: ['Core'], group: 'Core' },
-    builder: { groups: ['Core'], group: 'Core' },
+    builder: { groups: ['Core'], group: 'Core', title: 'Keep this title', hidden: true, model: 'keep-model' },
     ops: { groups: [], group: null }
   })
   gc.updateGroupChat('Core', room => {
     room.members = [roster[0], roster[1]]
     room.roomId = 'room-core'
+    room.log = [{ id: 'entry-1', text: 'keep transcript', at: 1 }]
+    room.watermarks = { 'legacy::builder': 1 }
+    room.sessions = { 'legacy::builder': 'sid-builder' }
+    room.image = 'data:image/png;base64,room'
     return room
   }, { sync: false })
 
@@ -1184,24 +1194,164 @@ test('existing group members can be replaced without stale profile metadata rese
   assert.equal(JSON.stringify(gc.$groupChats.get().Core.members.map(member => member.name)), JSON.stringify(['builder', 'ops']))
   assert.equal(gc.$botMeta.get().research.groups.includes('Core'), false)
   assert.equal(gc.$botMeta.get().builder.groups.includes('Core'), true)
+  assert.equal(gc.$botMeta.get().builder.title, 'Keep this title')
+  assert.equal(gc.$botMeta.get().builder.hidden, true)
+  assert.equal(gc.$botMeta.get().builder.model, 'keep-model')
   assert.equal(gc.$botMeta.get().ops.groups.includes('Core'), true)
+  assert.equal(gc.$groupChats.get().Core.roomId, 'room-core')
+  assert.equal(gc.$groupChats.get().Core.log[0].text, 'keep transcript')
+  assert.equal(gc.$groupChats.get().Core.watermarks['legacy::builder'], 1)
+  assert.equal(gc.$groupChats.get().Core.sessions['legacy::builder'], 'sid-builder')
+  assert.equal(gc.$groupChats.get().Core.image, 'data:image/png;base64,room')
   assert.equal(
     JSON.stringify(gc.groupChatMemberBots('Core', roster, gc.$botMeta.get()).map(member => member.name)),
     JSON.stringify(['builder', 'ops'])
   )
 })
 
-test('existing groups enforce the same member-count bounds as creation', async () => {
+test('existing groups allow one member but reject zero and more than the cap', async () => {
   const gc = load(() => '(pass)')
 
-  await assert.rejects(() => gc.replaceGroupChatMembers('Core', [{ name: 'solo' }]), /require 2/)
+  await gc.replaceGroupChatMembers('Core', [{ name: 'solo' }])
+  const requestsBeforeInvalidSelections = gc.requests.length
+  const durableBeforeInvalidSelections = JSON.stringify(gc.storageWrites.get('group-chats'))
+  await assert.rejects(() => gc.replaceGroupChatMembers('Core', []), /require 1/)
+  await assert.rejects(
+    () => gc.replaceGroupChatMembers('Core', Array.from({ length: 7 }, (_, index) => ({ name: `bot-${index}` }))),
+    /require 1/
+  )
+  assert.equal(gc.requests.length, requestsBeforeInvalidSelections)
+  assert.equal(JSON.stringify(gc.storageWrites.get('group-chats')), durableBeforeInvalidSelections)
+})
+
+test('group roster identity ignores falsy keys and keeps mixed local, remote, and offline members', () => {
+  const gc = load(() => '(pass)')
+  const local = { name: 'builder' }
+  const remote = { name: 'builder', remoteSource: true, connectionId: 'mini', connectionLabel: 'Mini' }
+  const offline = { name: 'ops', remoteSource: true, connectionId: 'nas', sourceScoped: true }
+
+  assert.equal(gc.botRosterKey({}), null)
+  assert.equal(gc.botRosterKey({ name: '' }), null)
+  assert.equal(gc.botRosterKey(local), 'legacy::builder')
+  assert.equal(gc.botRosterKey(remote), 'mini::builder')
+  assert.equal(
+    JSON.stringify(gc.durableGroupChatMembers([{}, local, remote, offline]).map(member => member.name)),
+    JSON.stringify(['builder', 'builder', 'ops'])
+  )
+
+  gc.$groupChats.set({ Core: { roomId: 'room-core', members: [{}, local, remote, offline] } })
+  assert.equal(
+    JSON.stringify(gc.groupChatMemberBots('Core', [local, remote], {}).map(member => [member.name, member.connectionId || 'local'])),
+    JSON.stringify([['builder', 'local'], ['builder', 'mini'], ['ops', 'nas']])
+  )
+})
+
+test('member search matches title, handle, and source without changing roster order', () => {
+  const gc = load(() => '(pass)')
+  const roster = [
+    { name: 'alpha', handle: 'first-bot' },
+    { name: 'beta', handle: 'second-bot', connectionLabel: 'Homelab' },
+    { name: 'gamma', handle: 'third-bot' }
+  ]
+  const meta = { alpha: { title: 'Planner' } }
+
+  assert.equal(JSON.stringify(gc.filterBots(roster, meta, 'plan').map(bot => bot.name)), JSON.stringify(['alpha']))
+  assert.equal(JSON.stringify(gc.filterBots(roster, meta, '@second').map(bot => bot.name)), JSON.stringify(['beta']))
+  assert.equal(JSON.stringify(gc.filterBots(roster, meta, 'home').map(bot => bot.name)), JSON.stringify(['beta']))
 })
 
 test('source contract: Group settings exposes persistent member checkboxes after creation', () => {
   assert.match(pluginSource, /function GroupChatSettingsDialog\(\{ group, members, roster, open, onClose, onRenamed \}\)/)
   assert.match(pluginSource, /'aria-label': 'Group members'/)
   assert.match(pluginSource, /await replaceGroupChatMembers\(finalName, selected\)/)
-  assert.match(pluginSource, /disabled: !name\.trim\(\) \|\| selected\.length < 2/)
+  assert.match(pluginSource, /disabled: !name\.trim\(\) \|\| !selected\.length/)
+  assert.match(pluginSource, /'aria-label': 'Search group members'/)
+  assert.match(pluginSource, /children: 'Disband'/)
+})
+
+test('failed metadata writes roll back local projections and leave the room roster unchanged', async () => {
+  const gc = load(() => '(pass)', { failedMetaNames: ['ops'] })
+  const roster = [{ name: 'builder' }, { name: 'ops' }]
+
+  gc.$botMeta.set({ builder: { groups: ['Core'], group: 'Core' }, ops: { groups: [], group: null } })
+  gc.updateGroupChat('Core', room => {
+    room.members = [{ name: 'builder', remoteSource: true, sourceScoped: true }]
+    return room
+  }, { sync: false })
+
+  const priorDurable = JSON.stringify(gc.storageWrites.get('group-chats'))
+  await assert.rejects(() => gc.replaceGroupChatMembers('Core', roster), /rolled back/)
+  assert.deepEqual(gc.$botMeta.get().builder.groups, ['Core'])
+  assert.deepEqual(gc.$botMeta.get().ops.groups, [])
+  assert.deepEqual(gc.$groupChats.get().Core.members.map(member => member.name), ['builder'])
+  assert.equal(JSON.stringify(gc.storageWrites.get('group-chats')), priorDurable, 'failed save does not write a new room roster')
+})
+
+test('a failed metadata rollback reports uncertain remote consistency instead of claiming success', async () => {
+  const gc = load(() => '(pass)', { failedMetaCalls: { ops: [1], builder: [2] } })
+  const roster = [{ name: 'builder' }, { name: 'ops' }]
+
+  gc.$botMeta.set({ builder: { groups: ['Core'], group: 'Core' }, ops: { groups: ['Core'], group: 'Core' } })
+  gc.updateGroupChat('Core', room => {
+    room.members = [{ name: 'builder' }]
+    return room
+  }, { sync: false })
+
+  await assert.rejects(
+    () => gc.replaceGroupChatMembers('Core', roster),
+    /remote metadata may be inconsistent/
+  )
+  assert.deepEqual(gc.$groupChats.get().Core.members.map(member => member.name), ['builder'])
+})
+
+test('member-save failure after rename leaves the renamed room as the retry target', async () => {
+  const gc = load(() => '(pass)', { failedMetaCalls: { ops: [2] } })
+  const members = [{ name: 'builder' }, { name: 'ops' }]
+
+  gc.$botMeta.set({ builder: { groups: ['Core'], group: 'Core' }, ops: { groups: ['Core'], group: 'Core' } })
+  gc.updateGroupChat('Core', room => {
+    room.roomId = 'room-1'
+    room.image = 'data:image/png;base64,room'
+    room.log = [{ id: 'entry-1', from: { kind: 'user' }, text: 'keep me', at: 1 }]
+    room.watermarks = { 'legacy::builder': 1 }
+    room.sessions = { 'legacy::builder': 'sid-builder' }
+    room.members = members
+    return room
+  }, { sync: false })
+
+  assert.equal(await gc.renameGroupChat('Core', 'Renamed', members), 'Renamed')
+  assert.equal(gc.$groupChats.get().Renamed.roomId, 'room-1')
+  assert.equal(gc.$groupChats.get().Renamed.image, 'data:image/png;base64,room')
+  assert.equal(gc.$groupChats.get().Renamed.log[0].id, 'entry-1')
+  assert.equal(gc.$groupChats.get().Renamed.watermarks['legacy::builder'], 1)
+  assert.equal(gc.$groupChats.get().Renamed.sessions['legacy::builder'], 'sid-builder')
+  await assert.rejects(() => gc.replaceGroupChatMembers('Renamed', members), /rolled back/)
+  assert.equal(gc.$groupChats.get().Core, undefined)
+  assert.ok(gc.$groupChats.get().Renamed)
+
+  await gc.replaceGroupChatMembers('Renamed', members)
+  assert.equal(JSON.stringify(gc.$groupChats.get().Renamed.members.map(member => member.name)), JSON.stringify(['builder', 'ops']))
+})
+
+test('a removed member is not scheduled again after an active turn changes the roster', async () => {
+  let gc
+  gc = load((profile) => {
+    if (profile === 'research') {
+      gc.$groupChats.set({
+        ...gc.$groupChats.get(),
+        Core: { ...gc.$groupChats.get().Core, members: [{ name: 'research' }] }
+      })
+      return 'research result'
+    }
+    return 'should not run'
+  })
+
+  gc.sendToGroupChat('Core', [{ name: 'research' }, { name: 'builder' }], 'start')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Core || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  assert.deepEqual(gc.calls.map(call => call.profile), ['research'])
 })
 
 test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {
