@@ -210,7 +210,7 @@ const ROSTER_SECTION_KEYS = ['direct', 'groups']
 const $rosterSectionsOpen = atom({ direct: true, groups: true })
 let rosterSectionMutationGeneration = 0
 
-function beginRosterSectionHydration() {
+function currentRosterSectionGeneration() {
   return rosterSectionMutationGeneration
 }
 
@@ -224,6 +224,8 @@ function setRosterSectionOpen(section, open) {
   $rosterSectionsOpen.set(next)
 
   try {
+    // Plugin storage has no cross-window subscription here; disclosure state
+    // is intentionally scoped to this window until the next plugin boot.
     Promise.resolve(pluginCtx?.storage?.set?.('roster-sections-open', next)).catch(() => undefined)
   } catch {
     /* storage unavailable — disclosure state lasts for this window */
@@ -10335,7 +10337,7 @@ function RosterSection({ children, section, open, onToggle, toggleDisabled = fal
           attentionCount
             ? jsx('span', {
                 className:
-                  'shrink-0 rounded-full bg-(--ui-accent,#4f9cf9) px-1.5 text-[0.6rem] font-semibold normal-case text-white',
+                  'shrink-0 rounded-full bg-(--ui-accent) px-1.5 text-[0.6rem] font-semibold normal-case text-white',
                 title: `${attentionCount} ${attentionLabel}`,
                 'aria-label': `${attentionCount} ${attentionLabel}`,
                 children: attentionCount
@@ -10361,6 +10363,8 @@ function RosterSection({ children, section, open, onToggle, toggleDisabled = fal
 }
 
 function rosterSectionIsOpen(section, saved, query = '') {
+  // Search is a temporary reveal: clearing it deliberately restores each
+  // section's saved disclosure state instead of changing the user's layout.
   return Boolean(String(query || '').trim()) || saved?.[section] !== false
 }
 
@@ -10963,7 +10967,7 @@ export default {
     // Restore Direct Messages / Groups disclosure state without allowing a
     // delayed hydration read to overwrite a newer click in this window.
     try {
-      const hydrationGeneration = beginRosterSectionHydration()
+      const hydrationGeneration = currentRosterSectionGeneration()
       Promise.resolve(ctx.storage?.get?.('roster-sections-open'))
         .then(value => hydrateRosterSectionsOpen(value, hydrationGeneration))
         .catch(() => undefined)

@@ -212,6 +212,13 @@ test('source contract: direct messages and groups render as separate roster sect
   assert.match(pluginSource, /onGroup: setGrouping/)
 })
 
+test('source contract: section disclosure is hidden and disabled while searching', () => {
+  assert.match(pluginSource, /hidden: !open/)
+  assert.match(pluginSource, /disabled: toggleDisabled/)
+  assert.match(pluginSource, /toggleDisabled: Boolean\(query\.trim\(\)\)/)
+  assert.match(pluginSource, /clearing it deliberately restores each/)
+})
+
 test('source contract: group rows carry the needs-you badge and open via openGroupChat', () => {
   assert.match(pluginSource, /needsYou: Boolean\(groupNeedsYou\[row\.name\]\)/)
   assert.match(pluginSource, /onOpen: openGroupChat/)
