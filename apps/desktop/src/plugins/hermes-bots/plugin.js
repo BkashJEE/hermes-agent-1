@@ -807,6 +807,7 @@ function durableGroupChatRooms(all = $groupChats.get()) {
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      pendingMemberConfigs: room.pendingMemberConfigs || {},
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
@@ -4216,6 +4217,272 @@ async function requestForBot(bot, method, params = {}) {
   return host.request(method, params)
 }
 
+const GROUP_REASONING_INHERIT = '__inherit__'
+const GROUP_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+
+function normalizeGroupMemberRuntimeConfig(description, options = []) {
+  const model = description?.model || {}
+
+  return {
+    provider: String(model.provider || '').trim(),
+    model: String(model.default || '').trim(),
+    reasoning: String(description?.reasoning_effort || '').trim().toLowerCase() || GROUP_REASONING_INHERIT,
+    options: (options || []).filter(provider => provider?.slug).map(provider => ({
+      slug: provider.slug,
+      name: provider.name || provider.slug,
+      models: (provider.models || [])
+        .map(candidate => (typeof candidate === 'string' ? candidate : candidate?.id || candidate?.name || ''))
+        .filter(Boolean)
+    }))
+  }
+}
+
+function groupMemberRuntimeCapability(bot, live = true) {
+  if (bot?.remoteSource && !live) {
+    return {
+      editable: false,
+      reason: 'This member is offline. Reconnect its source to update durable settings.'
+    }
+  }
+
+  if (bot?.remoteSource && typeof host.requestProfile !== 'function') {
+    return {
+      editable: false,
+      reason: 'Update Hermes Desktop to edit settings on another connection.'
+    }
+  }
+
+  return { editable: true, reason: '' }
+}
+
+function validateGroupMemberRuntimeConfig(config) {
+  const provider = String(config?.provider || '').trim()
+  const model = String(config?.model || '').trim()
+  const reasoning = String(config?.reasoning || '').trim().toLowerCase()
+  const options = Array.isArray(config?.options) ? config.options : []
+
+  if (!provider || !model) {
+    return 'Choose both a provider and model.'
+  }
+
+  const providerOption = options.find(option => option?.slug === provider)
+
+  if (!providerOption) {
+    return `Provider “${provider}” is unavailable on this member’s connection. Choose an available provider.`
+  }
+
+  if (!(providerOption.models || []).includes(model)) {
+    return `Model “${model}” is unavailable from ${provider}. Choose an available model.`
+  }
+
+  if (reasoning !== GROUP_REASONING_INHERIT && !GROUP_REASONING_EFFORTS.includes(reasoning)) {
+    return `Choose a supported reasoning effort (${GROUP_REASONING_EFFORTS.join(', ')}).`
+  }
+
+  return null
+}
+
+function sameGroupMemberRuntimeConfig(left, right) {
+  return (
+    String(left?.provider || '').trim() === String(right?.provider || '').trim() &&
+    String(left?.model || '').trim() === String(right?.model || '').trim() &&
+    String(left?.reasoning || '').trim().toLowerCase() === String(right?.reasoning || '').trim().toLowerCase()
+  )
+}
+
+async function loadGroupMemberRuntimeConfig(bot, live) {
+  const capability = groupMemberRuntimeCapability(bot, live)
+
+  if (!capability.editable) {
+    return { status: 'unsupported', reason: capability.reason, bot }
+  }
+
+  try {
+    const [description, inventory] = await Promise.all([
+      requestForBot(bot, 'profiles.describe', { name: bot.name }),
+      requestForBot(bot, 'model.options', {
+        profile: bot.name,
+        include_unconfigured: false,
+        explicit_only: false,
+        refresh: true
+      })
+    ])
+
+    if (!description || !Object.prototype.hasOwnProperty.call(description, 'reasoning_effort')) {
+      return {
+        status: 'unsupported',
+        reason: 'Update this member’s Hermes gateway to edit model and reasoning settings safely.',
+        bot
+      }
+    }
+
+    const normalized = normalizeGroupMemberRuntimeConfig(description, inventory?.providers)
+    const validation = validateGroupMemberRuntimeConfig(normalized)
+
+    return {
+      status: 'ready',
+      bot,
+      baseline: normalized,
+      draft: { provider: normalized.provider, model: normalized.model, reasoning: normalized.reasoning },
+      options: normalized.options,
+      error: validation
+    }
+  } catch (error) {
+    return {
+      status: 'error',
+      reason: `Could not load durable settings: ${error?.message || 'connection failed'}`,
+      bot
+    }
+  }
+}
+
+function groupMemberRuntimePayload(bot, config) {
+  const reasoning = String(config.reasoning || '').trim().toLowerCase()
+  return {
+    name: bot.name,
+    provider: String(config.provider || '').trim(),
+    model: String(config.model || '').trim(),
+    reasoning_effort: reasoning === GROUP_REASONING_INHERIT ? '' : reasoning
+  }
+}
+
+function cloneGroupMemberRuntimePending(pending) {
+  if (!pending || typeof pending !== 'object') {
+    return {}
+  }
+  return Object.fromEntries(
+    Object.entries(pending).map(([key, config]) => [key, { ...config }])
+  )
+}
+
+function snapshotGroupMemberRuntimePending(group) {
+  return cloneGroupMemberRuntimePending($groupChats.get()[group]?.pendingMemberConfigs)
+}
+
+function restoreGroupMemberRuntimePending(group, pending) {
+  updateGroupChat(group, room => {
+    room.pendingMemberConfigs = cloneGroupMemberRuntimePending(pending)
+    return room
+  })
+}
+
+async function rollbackGroupSettingsRename(finalName, originalName, members) {
+  const restoredName = await renameGroupChat(finalName, originalName, members)
+  if (restoredName !== originalName) {
+    throw new Error(`Could not restore original room name ${originalName}`)
+  }
+  return restoredName
+}
+
+async function saveGroupMemberRuntimeConfigs(group, configs) {
+  const changed = (configs || []).filter(entry =>
+    entry?.bot && entry?.baseline && entry?.draft && !sameGroupMemberRuntimeConfig(entry.baseline, entry.draft)
+  )
+
+  for (const entry of changed) {
+    const error = validateGroupMemberRuntimeConfig({ ...entry.draft, options: entry.options })
+
+    if (error) {
+      throw new Error(`${displayName(entry.bot, botRosterMeta(entry.bot, $botMeta.get()))}: ${error}`)
+    }
+  }
+
+  const committed = []
+
+  try {
+    for (const entry of changed) {
+      const result = await requestForBot(entry.bot, 'profiles.configure', groupMemberRuntimePayload(entry.bot, entry.draft))
+      const applied = result?.applied || {}
+
+      if (result?.ok === false || applied.model !== true || applied.reasoning_effort !== true) {
+        throw new Error(`${entry.bot.name} rejected the provider/model/reasoning update`)
+      }
+
+      committed.push(entry)
+    }
+  } catch (error) {
+    const rollback = await Promise.allSettled(
+      committed.reverse().map(entry =>
+        requestForBot(entry.bot, 'profiles.configure', groupMemberRuntimePayload(entry.bot, entry.baseline))
+      )
+    )
+    const uncertain = rollback.some(result =>
+      result.status === 'rejected' ||
+      result.value?.ok === false ||
+      result.value?.applied?.model !== true ||
+      result.value?.applied?.reasoning_effort !== true
+    )
+
+    throw new Error(
+      `${error?.message || 'Member settings save failed'}; ${
+        uncertain ? 'rollback could not be confirmed, profile settings may be inconsistent' : 'changes were rolled back'
+      }`
+    )
+  }
+
+  if (changed.length) {
+    updateGroupChat(group, room => {
+      const pending = { ...(room.pendingMemberConfigs || {}) }
+
+      for (const entry of changed) {
+        pending[groupMemberKey(entry.bot)] = {
+          provider: String(entry.draft.provider || '').trim(),
+          model: String(entry.draft.model || '').trim(),
+          reasoning: String(entry.draft.reasoning || '').trim().toLowerCase() === GROUP_REASONING_INHERIT
+            ? 'inherit'
+            : String(entry.draft.reasoning || '').trim().toLowerCase()
+        }
+      }
+
+      room.pendingMemberConfigs = pending
+      return room
+    })
+  }
+
+  return { changed: changed.length }
+}
+
+async function applyPendingGroupMemberRuntime(group, member, sessionId) {
+  const memberKey = groupMemberKey(member)
+  const pending = $groupChats.get()[group]?.pendingMemberConfigs?.[memberKey]
+
+  if (!pending) {
+    return false
+  }
+
+  try {
+    const modelResult = await requestForBot(member, 'config.set', {
+      session_id: sessionId,
+      profile: member.name,
+      key: 'model',
+      value: `${pending.model} --provider ${pending.provider} --session`
+    })
+    if (modelResult?.confirm_required) {
+      throw new Error(modelResult.confirm_message || `Model switch for ${member.name} requires confirmation`)
+    }
+    if (modelResult?.deferred) {
+      throw new Error(`Member session is still busy; saved settings for ${member.name} remain pending`)
+    }
+    await requestForBot(member, 'config.set', {
+      session_id: sessionId,
+      profile: member.name,
+      key: 'reasoning',
+      value: pending.reasoning
+    })
+  } catch (error) {
+    throw new Error(`Could not apply saved settings for ${member.name}: ${error?.message || 'runtime update failed'}`)
+  }
+
+  updateGroupChat(group, room => {
+    const next = { ...(room.pendingMemberConfigs || {}) }
+    delete next[memberKey]
+    room.pendingMemberConfigs = next
+    return room
+  })
+
+  return true
+}
+
 /** Stable per-member identity inside a group room. Local members keep their
  *  bare name (compat with rooms persisted before cross-connection groups);
  *  remote members get the source-qualified key so `dixie` on the Mini and a
@@ -4880,6 +5147,10 @@ async function replaceGroupChatMembers(group, bots) {
 
   updateGroupChat(group, room => {
     room.members = durableGroupChatMembers(unique)
+    const seated = new Set(unique.map(groupMemberKey))
+    room.pendingMemberConfigs = Object.fromEntries(
+      Object.entries(room.pendingMemberConfigs || {}).filter(([key]) => seated.has(key))
+    )
     return room
   })
 
@@ -5149,6 +5420,8 @@ function updateGroupChat(group, mutate, { sync = true } = {}) {
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        // Per-member inference changes wait here until that member's next turn.
+        pendingMemberConfigs: room.pendingMemberConfigs || {},
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
@@ -5637,6 +5910,12 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
   if (!runtime) {
     return null
   }
+
+  // Profile settings are committed by Group Settings, but an existing hidden
+  // member session already owns a live agent. Switch that session only at this
+  // boundary — after the prior turn finished and before the next prompt — so an
+  // in-flight response can never observe a half-swapped provider/model.
+  await applyPendingGroupMemberRuntime(group, member, runtime)
 
   recordGroupActivity(group, { kind: 'working', member: member.name, thread })
 
@@ -9635,6 +9914,140 @@ function GroupImageControls({ image, onImage, seedName, seedMembers }) {
   })
 }
 
+function GroupMemberRuntimeEditor({ bot, live, entry, onEntry }) {
+  const key = botRosterKey(bot)
+
+  useEffect(() => {
+    if (!key) {
+      return
+    }
+
+    onEntry({ status: 'loading', bot })
+    let cancelled = false
+    void loadGroupMemberRuntimeConfig(bot, live).then(result => {
+      if (!cancelled) {
+        onEntry(result)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+    // The member key and reachability define this load's lifecycle. Including
+    // the parent-owned entry or inline onEntry callback would cancel the
+    // request as soon as the initial "loading" update re-renders the row.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, live])
+
+  if (!entry || entry.status === 'loading') {
+    return jsxs('div', {
+      className: 'flex items-center gap-2 py-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: [
+        jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-quaternary)' }),
+        'Loading effective provider, model, and reasoning…'
+      ]
+    })
+  }
+
+  if (entry.status !== 'ready') {
+    return jsxs('div', {
+      className: 'rounded-md border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)',
+      children: [jsx(Codicon, { name: 'warning', className: 'mr-1' }), entry.reason]
+    })
+  }
+
+  const draft = entry.draft
+  const provider = entry.options.find(option => option.slug === draft.provider)
+  const models = provider?.models || []
+  const error = validateGroupMemberRuntimeConfig({ ...draft, options: entry.options })
+  const staged = !sameGroupMemberRuntimeConfig(entry.baseline, draft)
+  const reasoningLabel = draft.reasoning === GROUP_REASONING_INHERIT ? 'inherited/default' : draft.reasoning
+  const patchDraft = patch => onEntry({
+    ...entry,
+    draft: { ...draft, ...patch },
+    error: validateGroupMemberRuntimeConfig({ ...draft, ...patch, options: entry.options })
+  })
+
+  return jsxs('div', {
+    className: 'grid gap-1.5 pt-1.5',
+    children: [
+      jsxs('div', {
+        className: 'grid grid-cols-3 gap-1.5',
+        children: [
+          jsxs(Select, {
+            value: draft.provider,
+            onValueChange: value => {
+              const next = entry.options.find(option => option.slug === value)
+              patchDraft({ provider: value, model: next?.models?.[0] || '' })
+            },
+            children: [
+              jsx(SelectTrigger, {
+                className: 'h-7 min-w-0 rounded-md text-[0.6875rem]',
+                'aria-label': `Provider for ${bot.name}`,
+                children: jsx(SelectValue, {})
+              }),
+              jsx(SelectContent, {
+                children: entry.options.map(option =>
+                  jsx(SelectItem, { value: option.slug, children: option.name || option.slug }, option.slug)
+                )
+              })
+            ]
+          }),
+          jsxs(Select, {
+            value: draft.model,
+            onValueChange: model => patchDraft({ model }),
+            children: [
+              jsx(SelectTrigger, {
+                className: 'h-7 min-w-0 rounded-md text-[0.6875rem]',
+                'aria-label': `Model for ${bot.name}`,
+                children: jsx(SelectValue, {})
+              }),
+              jsx(SelectContent, {
+                children: models.map(model => jsx(SelectItem, { value: model, children: model }, model))
+              })
+            ]
+          }),
+          jsxs(Select, {
+            value: draft.reasoning,
+            onValueChange: reasoning => patchDraft({ reasoning }),
+            children: [
+              jsx(SelectTrigger, {
+                className: 'h-7 min-w-0 rounded-md text-[0.6875rem]',
+                'aria-label': `Reasoning effort for ${bot.name}`,
+                children: jsx(SelectValue, {})
+              }),
+              jsx(SelectContent, {
+                children: [
+                  jsx(SelectItem, { value: GROUP_REASONING_INHERIT, children: 'inherited/default' }, GROUP_REASONING_INHERIT),
+                  ...GROUP_REASONING_EFFORTS.map(reasoning =>
+                    jsx(SelectItem, { value: reasoning, children: reasoning }, reasoning)
+                  )
+                ]
+              })
+            ]
+          })
+        ]
+      }),
+      error
+        ? jsx('div', { className: 'text-[0.65rem] leading-4 text-(--ui-accent)', children: error })
+        : staged
+          ? jsx('div', {
+              className: 'text-[0.65rem] font-medium text-(--ui-text-secondary)',
+              children: 'Staged — applies before this member’s next group turn.'
+            })
+          : jsx('div', {
+              className: 'text-[0.65rem] text-(--ui-text-quaternary)',
+              children: `Current effective: ${draft.provider} · ${draft.model} · ${reasoningLabel}`
+            })
+    ]
+  })
+}
+
+/** Close the settings dialog without persisting its React-local draft. */
+function cancelGroupSettingsDraft(onClose) {
+  onClose()
+}
+
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
@@ -9647,6 +10060,8 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
   const [checked, setChecked] = useState({})
   const [query, setQuery] = useState('')
   const [workingGroup, setWorkingGroup] = useState(group)
+  const [memberConfigs, setMemberConfigs] = useState({})
+  const [saving, setSaving] = useState(false)
 
   const candidatesByKey = new Map()
 
@@ -9672,6 +10087,17 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
   const selected = candidates.filter(bot => checked[botRosterKey(bot)])
   const visible = filterBots(candidates, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+  const liveRosterKeys = new Set((roster || []).map(botRosterKey).filter(Boolean))
+  const selectedConfigEntries = selected
+    .map(bot => memberConfigs[botRosterKey(bot)])
+    .filter(entry => entry?.status === 'ready')
+  const configsLoading = selected.some(bot => {
+    const entry = memberConfigs[botRosterKey(bot)]
+    return !entry || entry.status === 'loading'
+  })
+  const configError = selectedConfigEntries.find(entry =>
+    validateGroupMemberRuntimeConfig({ ...entry.draft, options: entry.options })
+  )
 
   useEffect(() => {
     if (open) {
@@ -9680,39 +10106,87 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
       setChecked(Object.fromEntries((members || []).filter(bot => botRosterKey(bot)).map(bot => [botRosterKey(bot), true])))
       setQuery('')
       setWorkingGroup(group)
+      setMemberConfigs({})
+      setSaving(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
 
   const save = async () => {
+    if (saving) {
+      return
+    }
+
     if (!selected.length || selected.length > GROUP_CHAT_MAX_MEMBERS) {
       host.notifyError(new Error(`Group chats require 1–${GROUP_CHAT_MAX_MEMBERS} bots`), 'Could not save group')
       return
     }
 
-    let finalName = workingGroup
-
-    if (workingGroup === group) {
-      finalName = await renameGroupChat(group, name, members)
-
-      if (finalName === null) {
-        return // collision — dialog stays open for a different name
-      }
-
-      setWorkingGroup(finalName)
-    }
-
-    if (image !== current) {
-      setGroupChatImage(finalName, image)
-    }
-
-    try {
-      await replaceGroupChatMembers(finalName, selected)
-    } catch (error) {
-      host.notifyError(error, 'Could not save group members')
+    if (configsLoading) {
+      host.notifyError(new Error('Wait for member settings to finish loading.'), 'Could not save group')
       return
     }
 
+    if (configError) {
+      const message = validateGroupMemberRuntimeConfig({ ...configError.draft, options: configError.options })
+      host.notifyError(new Error(`${configError.bot.name}: ${message}`), 'Could not save group')
+      return
+    }
+
+    setSaving(true)
+
+    let finalName = workingGroup
+    let renamed = false
+    const pendingBefore = snapshotGroupMemberRuntimePending(workingGroup)
+
+    try {
+      if (workingGroup === group) {
+        finalName = await renameGroupChat(group, name, members)
+
+        if (finalName === null) {
+          setSaving(false)
+          return // collision — dialog stays open for a different name
+        }
+
+        renamed = finalName !== group
+        setWorkingGroup(finalName)
+      }
+
+      if (image !== current) {
+        setGroupChatImage(finalName, image)
+      }
+
+      await replaceGroupChatMembers(finalName, selected)
+      await saveGroupMemberRuntimeConfigs(finalName, selectedConfigEntries)
+    } catch (error) {
+      let rollbackError = null
+      try {
+        await replaceGroupChatMembers(finalName, members)
+        setGroupChatImage(finalName, current)
+        if (renamed) {
+          await rollbackGroupSettingsRename(finalName, group, members)
+          setWorkingGroup(group)
+        }
+      } catch (rollbackFailure) {
+        rollbackError = rollbackFailure
+      }
+
+      const rollbackTarget = renamed && !rollbackError ? group : finalName
+      restoreGroupMemberRuntimePending(rollbackTarget, pendingBefore)
+
+      host.notifyError(
+        new Error(
+          rollbackError
+            ? `${error?.message || 'save failed'}; room rollback could not be confirmed: ${rollbackError?.message || 'unknown error'}`
+            : `${error?.message || 'save failed'}; room changes were rolled back`
+        ),
+        'Could not save group settings'
+      )
+      setSaving(false)
+      return
+    }
+
+    setSaving(false)
     onClose()
 
     if (finalName !== group) {
@@ -9728,18 +10202,18 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
   return jsx(Dialog, {
     open,
     onOpenChange: value => {
-      if (!value) {
+      if (!value && !saving) {
         onClose()
       }
     },
     children: jsxs(DialogContent, {
-      className: 'max-w-sm',
+      className: 'max-h-[90vh] max-w-2xl overflow-y-auto',
       children: [
         jsxs(DialogHeader, {
           children: [
             jsx(DialogTitle, { children: 'Group settings' }),
             jsx(DialogDescription, {
-              children: `Rename the group, set a room picture, or choose 1–${GROUP_CHAT_MAX_MEMBERS} members.`
+              children: `Choose 1–${GROUP_CHAT_MAX_MEMBERS} members and stage each member’s provider, model, and reasoning. Save applies them to subsequent turns only.`
             })
           ]
         }),
@@ -9777,7 +10251,7 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
               children: `Members (${selected.length}/${GROUP_CHAT_MAX_MEMBERS})`
             }),
             jsx(ScrollArea, {
-              className: 'max-h-52 min-h-0 rounded-md border border-(--ui-border-subtle)',
+              className: 'max-h-[28rem] min-h-0 rounded-md border border-(--ui-border-subtle)',
               children: jsx('div', {
                 'aria-label': 'Group members',
                 className: 'grid gap-0.5 p-1.5',
@@ -9787,22 +10261,38 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
                   const disabled = !isChecked && atCap
                   const meta = botRosterMeta(bot, allMeta)
 
-                  return jsxs('label', {
+                  return jsxs('div', {
                     className: cn(
-                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-(--chrome-action-hover)',
+                      'grid rounded-md border border-transparent px-1.5 py-1 text-xs hover:bg-(--chrome-action-hover)',
+                      isChecked && 'border-(--ui-border-subtle) bg-(--chrome-action-hover)',
                       disabled && 'cursor-not-allowed opacity-50'
                     ),
                     children: [
-                      jsx(Checkbox, {
-                        checked: isChecked,
-                        disabled,
-                        onCheckedChange: value => setChecked(prev => ({ ...prev, [key]: Boolean(value) }))
-                      }),
-                      jsx('span', { className: 'min-w-0 flex-1 truncate', children: displayName(bot, meta) }),
-                      bot.remoteSource && bot.connectionLabel
-                        ? jsx('span', {
+                      jsxs('label', {
+                        className: cn('flex cursor-pointer items-center gap-2', disabled && 'cursor-not-allowed'),
+                        children: [
+                          jsx(Checkbox, {
+                            checked: isChecked,
+                            disabled,
+                            onCheckedChange: value => setChecked(prev => ({ ...prev, [key]: Boolean(value) }))
+                          }),
+                          jsx('span', { className: 'min-w-0 flex-1 truncate', children: displayName(bot, meta) }),
+                          jsx('span', {
                             className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                            children: bot.connectionLabel
+                            children: bot.remoteSource
+                              ? liveRosterKeys.has(key)
+                                ? bot.connectionLabel || 'remote'
+                                : `${bot.connectionLabel || 'remote'} · offline`
+                              : 'local'
+                          })
+                        ]
+                      }),
+                      isChecked
+                        ? jsx(GroupMemberRuntimeEditor, {
+                            bot,
+                            live: liveRosterKeys.has(key),
+                            entry: memberConfigs[key],
+                            onEntry: entry => setMemberConfigs(prev => ({ ...prev, [key]: entry }))
                           })
                         : null
                     ]
@@ -9814,14 +10304,19 @@ function GroupChatSettingsDialog({ group, members, roster, open, onClose, onRena
         }),
         jsxs(DialogFooter, {
           children: [
-            jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Cancel' }),
+            jsx(Button, {
+              variant: 'secondary',
+              disabled: saving,
+              onClick: () => cancelGroupSettingsDraft(onClose),
+              children: 'Cancel'
+            }),
             selected.length === 0
-              ? jsx(Button, { variant: 'destructive', onClick: () => void disband(), children: 'Disband' })
+              ? jsx(Button, { variant: 'destructive', disabled: saving, onClick: () => void disband(), children: 'Disband' })
               : null,
             jsx(Button, {
-              disabled: !name.trim() || !selected.length,
+              disabled: saving || configsLoading || Boolean(configError) || !name.trim() || !selected.length,
               onClick: () => void save(),
-              children: `Save (${selected.length})`
+              children: saving ? 'Saving…' : `Save (${selected.length})`
             })
           ]
         })

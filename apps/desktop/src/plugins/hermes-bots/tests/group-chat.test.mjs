@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false, failedMetaNames = [], failedMetaCalls = {}, storageState } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false, failedMetaNames = [], failedMetaCalls = {}, storageState, profileDescriptions = {}, modelOptionsByProfile = {}, failedRuntimeProfiles = [], confirmRuntimeProfiles = [], deferredRuntimeProfiles = [], useEffectImpl } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => {
@@ -46,6 +46,10 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
   }
   const context = {
     atom,
+    useEffect: useEffectImpl || (() => undefined),
+    jsx: (type, props) => ({ type, props }),
+    jsxs: (type, props) => ({ type, props }),
+    GlyphSpinner: () => null,
     setTimeout: fn => {
       if (deferredTimers) {
         setImmediate(fn)
@@ -61,6 +65,41 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     host: {
       request: async (method, params) => {
         requests.push({ method, params })
+        if (method === 'profiles.describe') {
+          return profileDescriptions[params.name] || {
+            model: { provider: 'anthropic', default: 'claude-default' },
+            reasoning_effort: 'medium'
+          }
+        }
+        if (method === 'model.options') {
+          return modelOptionsByProfile[params?.profile || 'default'] || {
+            providers: [
+              { slug: 'anthropic', models: ['claude-default', 'claude-deep'] },
+              { slug: 'openai-codex', models: ['gpt-5.6'] }
+            ]
+          }
+        }
+        if (method === 'config.set') {
+          if (failedRuntimeProfiles.includes(params.profile)) {
+            throw new Error(`runtime update rejected for ${params.profile}`)
+          }
+          if (params.key === 'model' && confirmRuntimeProfiles.includes(params.profile)) {
+            return {
+              key: params.key,
+              value: params.value,
+              confirm_required: true,
+              confirm_message: `confirm runtime model for ${params.profile}`
+            }
+          }
+          if (params.key === 'model' && deferredRuntimeProfiles.includes(params.profile)) {
+            return {
+              key: params.key,
+              value: params.value,
+              deferred: true
+            }
+          }
+          return { key: params.key, value: params.value }
+        }
         if (method === 'profiles.list') {
           return {
             profiles: [
@@ -73,6 +112,24 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
           }
         }
         if (method === 'profiles.configure') {
+          if ('model' in params || 'provider' in params || 'reasoning_effort' in params) {
+            if (failedRuntimeProfiles.includes(params.name)) {
+              return {
+                ok: false,
+                applied: {
+                  ...('model' in params || 'provider' in params ? { model: false } : {}),
+                  ...('reasoning_effort' in params ? { reasoning_effort: false } : {})
+                }
+              }
+            }
+            return {
+              ok: true,
+              applied: {
+                ...('model' in params || 'provider' in params ? { model: true } : {}),
+                ...('reasoning_effort' in params ? { reasoning_effort: true } : {})
+              }
+            }
+          }
           const metaCall = (metaCallCounts.get(params.name) || 0) + 1
           metaCallCounts.set(params.name, metaCall)
           if (failedMetaNames.includes(params.name) || failedMetaCalls[params.name]?.includes(metaCall)) {
@@ -203,7 +260,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, durableGroupChatMembers, filterBots, botRosterKey, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, durableGroupChatMembers, filterBots, botRosterKey, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, normalizeGroupMemberRuntimeConfig: typeof normalizeGroupMemberRuntimeConfig === "function" ? normalizeGroupMemberRuntimeConfig : undefined, validateGroupMemberRuntimeConfig: typeof validateGroupMemberRuntimeConfig === "function" ? validateGroupMemberRuntimeConfig : undefined, saveGroupMemberRuntimeConfigs: typeof saveGroupMemberRuntimeConfigs === "function" ? saveGroupMemberRuntimeConfigs : undefined, applyPendingGroupMemberRuntime: typeof applyPendingGroupMemberRuntime === "function" ? applyPendingGroupMemberRuntime : undefined, snapshotGroupMemberRuntimePending: typeof snapshotGroupMemberRuntimePending === "function" ? snapshotGroupMemberRuntimePending : undefined, restoreGroupMemberRuntimePending: typeof restoreGroupMemberRuntimePending === "function" ? restoreGroupMemberRuntimePending : undefined, rollbackGroupSettingsRename: typeof rollbackGroupSettingsRename === "function" ? rollbackGroupSettingsRename : undefined, groupMemberRuntimeCapability: typeof groupMemberRuntimeCapability === "function" ? groupMemberRuntimeCapability : undefined, GroupMemberRuntimeEditor: typeof GroupMemberRuntimeEditor === "function" ? GroupMemberRuntimeEditor : undefined, cancelGroupSettingsDraft: typeof cancelGroupSettingsDraft === "function" ? cancelGroupSettingsDraft : undefined, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   context.plugin.register({
@@ -1264,9 +1321,384 @@ test('source contract: Group settings exposes persistent member checkboxes after
   assert.match(pluginSource, /function GroupChatSettingsDialog\(\{ group, members, roster, open, onClose, onRenamed \}\)/)
   assert.match(pluginSource, /'aria-label': 'Group members'/)
   assert.match(pluginSource, /await replaceGroupChatMembers\(finalName, selected\)/)
-  assert.match(pluginSource, /disabled: !name\.trim\(\) \|\| !selected\.length/)
   assert.match(pluginSource, /'aria-label': 'Search group members'/)
   assert.match(pluginSource, /children: 'Disband'/)
+})
+
+test('member runtime config validates provider/model pairs and disables unsupported offline edits', () => {
+  const gc = load(() => '(pass)')
+  assert.equal(typeof gc.validateGroupMemberRuntimeConfig, 'function')
+  assert.equal(typeof gc.groupMemberRuntimeCapability, 'function')
+
+  const options = [{ slug: 'anthropic', models: ['claude-default', 'claude-deep'] }]
+  assert.equal(
+    gc.validateGroupMemberRuntimeConfig({ provider: 'anthropic', model: 'claude-deep', reasoning: 'high', options }),
+    null
+  )
+  assert.match(
+    gc.validateGroupMemberRuntimeConfig({ provider: 'missing', model: 'ghost', reasoning: 'high', options }),
+    /Provider “missing” is unavailable/
+  )
+  assert.match(
+    gc.validateGroupMemberRuntimeConfig({ provider: 'anthropic', model: 'ghost', reasoning: 'high', options }),
+    /Model “ghost” is unavailable/
+  )
+  assert.match(
+    gc.validateGroupMemberRuntimeConfig({ provider: 'anthropic', model: 'claude-deep', reasoning: 'impossible', options }),
+    /reasoning effort/i
+  )
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(gc.groupMemberRuntimeCapability({ name: 'ops', remoteSource: true, connectionId: 'nas' }, false))),
+    { editable: false, reason: 'This member is offline. Reconnect its source to update durable settings.' }
+  )
+})
+
+test('inherited reasoning remains editable and clears the profile and next-turn session override', async () => {
+  const gc = load(() => '(pass)', {
+    profileDescriptions: {
+      builder: {
+        model: { provider: 'anthropic', default: 'claude-default' },
+        reasoning_effort: ''
+      }
+    }
+  })
+  const normalized = gc.normalizeGroupMemberRuntimeConfig(
+    {
+      model: { provider: 'anthropic', default: 'claude-default' },
+      reasoning_effort: ''
+    },
+    [{ slug: 'anthropic', models: ['claude-default'] }]
+  )
+  assert.equal(normalized.reasoning, '__inherit__')
+  assert.equal(gc.validateGroupMemberRuntimeConfig(normalized), null)
+
+  const builder = { name: 'builder' }
+  await gc.saveGroupMemberRuntimeConfigs('Core', [
+    {
+      bot: builder,
+      baseline: { provider: 'anthropic', model: 'claude-default', reasoning: 'high' },
+      draft: { provider: 'anthropic', model: 'claude-default', reasoning: '__inherit__' },
+      options: normalized.options
+    }
+  ])
+
+  const profileWrite = gc.requests.find(request => request.method === 'profiles.configure')
+  assert.equal(profileWrite.params.reasoning_effort, '')
+  assert.equal(gc.$groupChats.get().Core.pendingMemberConfigs.builder.reasoning, 'inherit')
+
+  await gc.applyPendingGroupMemberRuntime('Core', builder, 'rt-builder')
+  const reasoningWrite = gc.requests.find(request =>
+    request.method === 'config.set' && request.params.key === 'reasoning'
+  )
+  assert.equal(reasoningWrite.params.value, 'inherit')
+})
+
+test('member runtime editor keeps its in-flight load across the parent loading-state rerender', async () => {
+  let cleanup
+  let previousDeps
+  const useEffectImpl = (effect, deps) => {
+    const changed = !previousDeps || deps.some((value, index) => value !== previousDeps[index])
+    if (!changed) {
+      return
+    }
+    cleanup?.()
+    previousDeps = [...deps]
+    cleanup = effect()
+  }
+  const gc = load(() => '(pass)', { useEffectImpl })
+  const bot = { name: 'builder' }
+  let entry
+
+  gc.GroupMemberRuntimeEditor({ bot, live: true, entry, onEntry: value => { entry = value } })
+  assert.equal(entry.status, 'loading')
+
+  gc.GroupMemberRuntimeEditor({ bot, live: true, entry, onEntry: value => { entry = value } })
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(entry.status, 'ready')
+  assert.equal(entry.draft.model, 'claude-default')
+})
+
+test('member runtime Save commits only changed final-roster profiles and stages the next turn without touching room identity/history', async () => {
+  const gc = load(() => '(pass)')
+  const builder = { name: 'builder' }
+  const research = { name: 'research' }
+  gc.updateGroupChat('Core', room => {
+    room.roomId = 'room-core'
+    room.log = [{ id: 'entry-1', text: 'keep transcript', at: 1 }]
+    room.sessions = { builder: 'sid-builder' }
+    room.members = [builder, research]
+    return room
+  }, { sync: false })
+
+  const configs = [
+    {
+      bot: builder,
+      baseline: { provider: 'anthropic', model: 'claude-default', reasoning: 'medium' },
+      draft: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' },
+      options: [{ slug: 'anthropic', models: ['claude-default', 'claude-deep'] }]
+    },
+    {
+      bot: research,
+      baseline: { provider: 'anthropic', model: 'claude-default', reasoning: 'medium' },
+      draft: { provider: 'anthropic', model: 'claude-default', reasoning: 'medium' },
+      options: [{ slug: 'anthropic', models: ['claude-default', 'claude-deep'] }]
+    }
+  ]
+
+  const result = await gc.saveGroupMemberRuntimeConfigs('Core', configs)
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { changed: 1 })
+  const writes = gc.requests.filter(request => request.method === 'profiles.configure')
+  assert.deepEqual(JSON.parse(JSON.stringify(writes)), [
+    {
+      method: 'profiles.configure',
+      params: {
+        name: 'builder',
+        provider: 'anthropic',
+        model: 'claude-deep',
+        reasoning_effort: 'high'
+      }
+    }
+  ])
+
+  const room = gc.$groupChats.get().Core
+  assert.equal(room.roomId, 'room-core')
+  assert.equal(room.log[0].text, 'keep transcript')
+  assert.equal(room.sessions.builder, 'sid-builder')
+  assert.deepEqual(JSON.parse(JSON.stringify(room.pendingMemberConfigs.builder)), {
+    provider: 'anthropic', model: 'claude-deep', reasoning: 'high'
+  })
+})
+
+test('member runtime Save rolls back earlier profile writes when a later member fails', async () => {
+  const gc = load(() => '(pass)', { failedRuntimeProfiles: ['research'] })
+  const options = [{ slug: 'anthropic', models: ['claude-default', 'claude-deep'] }]
+  const configs = [
+    {
+      bot: { name: 'builder' },
+      baseline: { provider: 'anthropic', model: 'claude-default', reasoning: 'medium' },
+      draft: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' },
+      options
+    },
+    {
+      bot: { name: 'research' },
+      baseline: { provider: 'anthropic', model: 'claude-default', reasoning: 'medium' },
+      draft: { provider: 'anthropic', model: 'claude-deep', reasoning: 'low' },
+      options
+    }
+  ]
+
+  await assert.rejects(() => gc.saveGroupMemberRuntimeConfigs('Core', configs), /research.*rejected.*rolled back/i)
+  const writes = gc.requests.filter(request => request.method === 'profiles.configure')
+  assert.equal(writes.length, 3)
+  assert.equal(writes[0].params.name, 'builder')
+  assert.equal(writes[1].params.name, 'research')
+  assert.deepEqual(JSON.parse(JSON.stringify(writes[2].params)), {
+    name: 'builder',
+    provider: 'anthropic',
+    model: 'claude-default',
+    reasoning_effort: 'medium'
+  })
+  assert.equal(gc.$groupChats.get().Core?.pendingMemberConfigs, undefined)
+})
+
+test('pending member runtime changes apply immediately before the next prompt and then clear', async () => {
+  const gc = load(() => 'done')
+  const member = { name: 'builder' }
+  gc.updateGroupChat('Core', room => {
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' }
+    }
+    return room
+  }, { sync: false })
+
+  await gc.applyPendingGroupMemberRuntime('Core', member, 'rt-builder')
+
+  const relevant = gc.requests.filter(request => ['config.set', 'prompt.submit'].includes(request.method))
+  assert.deepEqual(JSON.parse(JSON.stringify(relevant)), [
+    {
+      method: 'config.set',
+      params: {
+        session_id: 'rt-builder',
+        profile: 'builder',
+        key: 'model',
+        value: 'claude-deep --provider anthropic --session'
+      }
+    },
+    {
+      method: 'config.set',
+      params: { session_id: 'rt-builder', profile: 'builder', key: 'reasoning', value: 'high' }
+    }
+  ])
+  assert.equal(gc.$groupChats.get().Core.pendingMemberConfigs.builder, undefined)
+})
+
+test('group turn integration applies pending settings before submitting that member prompt', async () => {
+  const gc = load(() => 'done')
+  const member = { name: 'builder' }
+  gc.updateGroupChat('Core', room => {
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' }
+    }
+    return room
+  }, { sync: false })
+
+  gc.sendToGroupChat('Core', [member], 'use the new settings')
+  for (let i = 0; i < 200 && gc.$groupChats.get().Core?.running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const methods = gc.requests
+    .filter(request => ['config.set', 'prompt.submit'].includes(request.method))
+    .map(request => request.method)
+  assert.deepEqual(methods, ['config.set', 'config.set', 'prompt.submit'])
+  assert.equal(gc.calls[0].profile, 'builder')
+  assert.equal(gc.$groupChats.get().Core.pendingMemberConfigs.builder, undefined)
+})
+
+test('member selector removal prunes pending settings only for members outside the final roster', async () => {
+  const gc = load(() => '(pass)')
+  const builder = { name: 'builder' }
+  const ops = { name: 'ops' }
+  gc.updateGroupChat('Core', room => {
+    room.members = [builder, ops]
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' },
+      ops: { provider: 'anthropic', model: 'claude-default', reasoning: 'low' }
+    }
+    return room
+  }, { sync: false })
+
+  await gc.replaceGroupChatMembers('Core', [builder])
+
+  assert.equal(JSON.stringify(Object.keys(gc.$groupChats.get().Core.pendingMemberConfigs)), JSON.stringify(['builder']))
+  assert.equal(JSON.stringify(gc.$groupChats.get().Core.members.map(member => member.name)), JSON.stringify(['builder']))
+})
+
+test('failed staged Save can restore pending settings pruned by the roster write', async () => {
+  const gc = load(() => '(pass)')
+  const builder = { name: 'builder' }
+  const ops = { name: 'ops' }
+  gc.updateGroupChat('Core', room => {
+    room.members = [builder, ops]
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' },
+      ops: { provider: 'anthropic', model: 'claude-default', reasoning: 'low' }
+    }
+    return room
+  }, { sync: false })
+
+  const pendingBefore = gc.snapshotGroupMemberRuntimePending('Core')
+  await gc.replaceGroupChatMembers('Core', [builder])
+  assert.equal(gc.$groupChats.get().Core.pendingMemberConfigs.ops, undefined)
+
+  gc.restoreGroupMemberRuntimePending('Core', pendingBefore)
+  const expected = {
+    builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' },
+    ops: { provider: 'anthropic', model: 'claude-default', reasoning: 'low' }
+  }
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(gc.$groupChats.get().Core.pendingMemberConfigs)),
+    expected
+  )
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(gc.storageWrites.get('group-chats').Core.pendingMemberConfigs)),
+    expected,
+    'rollback persistence keeps the same pending settings as the live room'
+  )
+})
+
+test('rename rollback reports an old-name collision instead of claiming success', async () => {
+  const gc = load(() => '(pass)')
+  const members = [{ name: 'builder' }]
+  gc.$groupChats.set({
+    Core: { log: [], watermarks: {}, members, epoch: 0, running: false },
+    Renamed: { log: [], watermarks: {}, members, epoch: 0, running: false }
+  })
+
+  await assert.rejects(
+    () => gc.rollbackGroupSettingsRename('Renamed', 'Core', members),
+    /could not restore original room name/i
+  )
+  assert.ok(gc.$groupChats.get().Renamed)
+  assert.ok(gc.$groupChats.get().Core)
+})
+
+test('failed next-turn runtime application stays pending and never reports false success', async () => {
+  const gc = load(() => 'should not run', { failedRuntimeProfiles: ['builder'] })
+  const member = { name: 'builder' }
+  gc.updateGroupChat('Core', room => {
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' }
+    }
+    return room
+  }, { sync: false })
+
+  await assert.rejects(
+    () => gc.applyPendingGroupMemberRuntime('Core', member, 'rt-builder'),
+    /Could not apply saved settings for builder.*runtime update rejected/i
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(gc.$groupChats.get().Core.pendingMemberConfigs.builder)), {
+    provider: 'anthropic', model: 'claude-deep', reasoning: 'high'
+  })
+  assert.equal(gc.requests.some(request => request.method === 'prompt.submit'), false)
+})
+
+test('next-turn runtime application rejects a model switch that still requires confirmation', async () => {
+  const gc = load(() => 'should not run', { confirmRuntimeProfiles: ['builder'] })
+  const member = { name: 'builder' }
+  gc.updateGroupChat('Core', room => {
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' }
+    }
+    return room
+  }, { sync: false })
+
+  await assert.rejects(
+    () => gc.applyPendingGroupMemberRuntime('Core', member, 'rt-builder'),
+    /confirm runtime model for builder/i
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(gc.$groupChats.get().Core.pendingMemberConfigs.builder)), {
+    provider: 'anthropic', model: 'claude-deep', reasoning: 'high'
+  })
+  assert.equal(gc.requests.some(request => request.method === 'prompt.submit'), false)
+})
+
+test('next-turn runtime application stays pending when the member session is still busy', async () => {
+  const gc = load(() => 'should not run', { deferredRuntimeProfiles: ['builder'] })
+  const member = { name: 'builder' }
+  gc.updateGroupChat('Core', room => {
+    room.pendingMemberConfigs = {
+      builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' }
+    }
+    return room
+  }, { sync: false })
+
+  await assert.rejects(
+    () => gc.applyPendingGroupMemberRuntime('Core', member, 'rt-builder'),
+    /session is still busy/i
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(gc.$groupChats.get().Core.pendingMemberConfigs.builder)), {
+    provider: 'anthropic', model: 'claude-deep', reasoning: 'high'
+  })
+  assert.equal(gc.requests.some(request => request.method === 'prompt.submit'), false)
+})
+
+test('Cancel discards the staged member draft without profile or room writes', () => {
+  const gc = load(() => '(pass)')
+  const staged = { builder: { provider: 'anthropic', model: 'claude-deep', reasoning: 'high' } }
+  const before = JSON.stringify(staged)
+  let closed = 0
+
+  gc.cancelGroupSettingsDraft(() => {
+    closed += 1
+  })
+
+  assert.equal(closed, 1)
+  assert.equal(JSON.stringify(staged), before)
+  assert.equal(gc.requests.some(request => request.method === 'profiles.configure'), false)
+  assert.equal(gc.storageWrites.has('group-chats'), false)
 })
 
 test('failed metadata writes roll back local projections and leave the room roster unchanged', async () => {

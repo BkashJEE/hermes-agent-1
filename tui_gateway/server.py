@@ -12391,6 +12391,31 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "clamp"})
 
+            if arg in {"inherit", "inherited", "default"}:
+                if global_scope or session is None:
+                    loaded_cfg = _load_cfg_raw()
+                    cfg = loaded_cfg if isinstance(loaded_cfg, dict) else {}
+                    agent_cfg = (
+                        cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+                    )
+                    agent_cfg.pop("reasoning_effort", None)
+                    if agent_cfg:
+                        cfg["agent"] = agent_cfg
+                    else:
+                        cfg.pop("agent", None)
+                    _save_cfg(cfg)
+                if session is not None:
+                    session.pop("create_reasoning_override", None)
+                    if session.get("agent") is not None:
+                        session["agent"].reasoning_config = None
+                        _persist_live_session_runtime(session)
+                        _emit(
+                            "session.info",
+                            params.get("session_id", ""),
+                            _session_info(session["agent"], session),
+                        )
+                return _ok(rid, {"key": key, "value": "inherit"})
+
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")

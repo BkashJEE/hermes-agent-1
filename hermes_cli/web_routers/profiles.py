@@ -80,6 +80,8 @@ _profile_to_dict = late("_profile_to_dict")
 _resolve_profile_dir = late("_resolve_profile_dir")
 _spawn_hermes_action = late("_spawn_hermes_action")
 _strip_session_list_rows = late("_strip_session_list_rows")
+_apply_main_model_assignment = late("_apply_main_model_assignment")
+_normalize_main_model_assignment = late("_normalize_main_model_assignment")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 

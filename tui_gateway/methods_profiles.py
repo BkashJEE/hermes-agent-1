@@ -528,7 +528,8 @@ def _(rid, params: dict) -> dict:
     """Full configuration snapshot of one profile, for an editor UI.
 
     Params: ``name`` (required). Result:
-    ``{name, description, soul, model: {provider, default}, skills:
+    ``{name, description, soul, model: {provider, default}, reasoning_effort,
+    skills:
     [{name, enabled}], toolsets: [{name, description, tool_count, enabled}]}``
 
     Skill enablement mirrors the disabled-list model (installed = enabled
@@ -663,6 +664,13 @@ def _(rid, params: dict) -> dict:
                 pass
 
             model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+            raw_reasoning_effort = agent_cfg.get("reasoning_effort", "")
+            reasoning_effort = (
+                "none"
+                if raw_reasoning_effort is False
+                else str(raw_reasoning_effort or "").strip().lower()
+            )
 
             description = ""
             try:
@@ -682,6 +690,7 @@ def _(rid, params: dict) -> dict:
                         "provider": str(model_cfg.get("provider") or ""),
                         "default": str(model_cfg.get("default") or ""),
                     },
+                    "reasoning_effort": reasoning_effort,
                     "skills": installed,
                     "toolsets": toolsets_out,
                     "toolsets_pinned": pinned_set is not None,
@@ -701,6 +710,7 @@ def _(rid, params: dict) -> dict:
     Params: ``name`` (required) plus any of:
     ``description`` (str), ``soul`` (str, full SOUL.md replacement),
     ``model`` + ``provider`` (both required together),
+    ``reasoning_effort`` (canonical reasoning level; empty clears the override),
     ``disabled_skills`` (list[str], replace semantics),
     ``enabled_toolsets`` (list[str], replace semantics; empty list clears
     the pin so every toolset is enabled again), and
@@ -830,16 +840,87 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 applied["description"] = False
 
-        model = str(params.get("model") or "").strip()
-        provider = str(params.get("provider") or "").strip()
-        if model and provider:
-            try:
-                from hermes_cli.web_routers.profiles import _write_profile_model
+        inference_keys = {"model", "provider", "reasoning_effort"}
+        inference_requested = any(key in params for key in inference_keys)
+        if inference_requested:
+            model_requested = "model" in params or "provider" in params
+            reasoning_requested = "reasoning_effort" in params
+            model = str(params.get("model") or "").strip()
+            provider = str(params.get("provider") or "").strip()
+            reasoning_effort = str(params.get("reasoning_effort") or "").strip().lower()
+            inference_errors = {}
 
-                _write_profile_model(profile_dir, provider, model)
-                applied["model"] = True
-            except Exception:
-                applied["model"] = False
+            if model_requested and not (model and provider):
+                inference_errors["model"] = "Model and provider are required together"
+
+            if reasoning_requested:
+                try:
+                    from hermes_constants import parse_reasoning_effort
+
+                    if reasoning_effort and parse_reasoning_effort(reasoning_effort) is None:
+                        inference_errors["reasoning_effort"] = (
+                            "Unsupported reasoning effort; choose none, minimal, low, "
+                            "medium, high, xhigh, max, or ultra"
+                        )
+                except Exception:
+                    inference_errors["reasoning_effort"] = (
+                        "Unsupported reasoning effort; choose none, minimal, low, "
+                        "medium, high, xhigh, max, or ultra"
+                    )
+
+            if inference_errors:
+                if model_requested:
+                    applied["model"] = False
+                if reasoning_requested:
+                    applied["reasoning_effort"] = False
+                return _ok(
+                    rid,
+                    {"ok": False, "applied": applied, "errors": inference_errors},
+                )
+
+            token = set_hermes_home_override(str(profile_dir))
+            try:
+                from hermes_cli.config import load_config, save_config
+                from hermes_cli.web_routers.profiles import (
+                    _apply_main_model_assignment,
+                    _normalize_main_model_assignment,
+                )
+
+                loaded_cfg = load_config()
+                cfg = loaded_cfg if isinstance(loaded_cfg, dict) else {}
+                if model_requested:
+                    provider, model = _normalize_main_model_assignment(provider, model)
+                    cfg["model"] = _apply_main_model_assignment(
+                        cfg.get("model", {}), provider, model
+                    )
+                if reasoning_requested:
+                    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+                    if reasoning_effort:
+                        agent_cfg["reasoning_effort"] = reasoning_effort
+                    else:
+                        agent_cfg.pop("reasoning_effort", None)
+                    if agent_cfg:
+                        cfg["agent"] = agent_cfg
+                    else:
+                        cfg.pop("agent", None)
+                save_config(cfg)
+                if model_requested:
+                    applied["model"] = True
+                if reasoning_requested:
+                    applied["reasoning_effort"] = True
+            except Exception as exc:
+                if model_requested:
+                    applied["model"] = False
+                if reasoning_requested:
+                    applied["reasoning_effort"] = False
+                errors = {}
+                if model_requested:
+                    errors["model"] = str(exc)
+                if reasoning_requested:
+                    errors["reasoning_effort"] = str(exc)
+                return _ok(rid, {"ok": False, "applied": applied, "errors": errors})
+            finally:
+                reset_hermes_home_override(token)
 
         needs_cfg = (
             isinstance(params.get("disabled_skills"), list)
