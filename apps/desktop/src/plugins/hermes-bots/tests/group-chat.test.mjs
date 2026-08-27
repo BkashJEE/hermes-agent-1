@@ -8,7 +8,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 /** Load the plugin in a vm with a scripted cli.exec so member turns are
  *  deterministic. `turnScript(profile, prompt)` returns the member's reply
  *  text (or throws to simulate a failed turn). */
-function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false, failedMetaNames = [], failedMetaCalls = {} } = {}) {
+function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approvalUntilResumeCall, conflictOnce = false, deferredTimers = false, failedMetaNames = [], failedMetaCalls = {}, storageState } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = { get: () => values.get(slot), set: value => {
@@ -30,6 +30,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
   const sharedUiMeta = {}
   const uiMetaRevisions = {}
   const metaCallCounts = new Map()
+  const storageWrites = storageState || new Map()
   let sessionSequence = 0
   // busyUntilResumeCall[profile] = N: this profile's session.resume reports
   // inflight/running for its first N calls, then flips to done — simulating
@@ -205,9 +206,8 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
       '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, replaceGroupChatMembers, groupChatMemberBots, durableGroupChatMembers, filterBots, botRosterKey, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
-  const storageWrites = new Map()
   context.plugin.register({
-    storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
+    storage: { get: key => storageWrites.get(key) ?? null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
   return { ...context.__gc, approvalResponds, calls, clarifyResponds, host: context.host, requests, sessions, storageWrites, sharedUiMeta, uiMetaRevisions }
@@ -1352,6 +1352,44 @@ test('a removed member is not scheduled again after an active turn changes the r
   }
 
   assert.deepEqual(gc.calls.map(call => call.profile), ['research'])
+})
+
+test('saved roster removal survives sync persistence and excludes the member from the next reloaded turn', async () => {
+  const storageState = new Map()
+  const first = load(() => '(pass)', { storageState })
+  const research = { name: 'research' }
+  const builder = { name: 'builder' }
+
+  first.$botMeta.set({
+    research: { groups: ['Core'], group: 'Core' },
+    builder: { groups: ['Core'], group: 'Core' }
+  })
+  first.updateGroupChat('Core', room => {
+    room.roomId = 'room-core'
+    room.members = first.durableGroupChatMembers([research, builder])
+    room.log = [{ id: 'seed', from: { kind: 'user', name: 'You' }, text: 'history', at: 1, thread: 'seed' }]
+    return room
+  }, { sync: false })
+
+  await first.replaceGroupChatMembers('Core', [research])
+  for (let i = 0; i < 20 && (first.uiMetaRevisions['hermes-bots-groups'] || 0) < 1; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const reloaded = load(() => '(pass)', { storageState })
+  await new Promise(resolve => setImmediate(resolve))
+  reloaded.$botMeta.set({
+    research: { groups: ['Core'], group: 'Core' },
+    builder: { groups: ['Core'], group: 'Core' }
+  })
+  const nextMembers = reloaded.groupChatMemberBots('Core', [research, builder], reloaded.$botMeta.get())
+
+  reloaded.sendToGroupChat('Core', nextMembers, 'next turn')
+  for (let i = 0; i < 200 && (reloaded.$groupChats.get().Core || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  assert.deepEqual(reloaded.calls.map(call => call.profile), ['research'])
 })
 
 test('disband: removes only this membership, room log, workspace, and needs-you state', async () => {

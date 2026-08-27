@@ -806,6 +806,7 @@ function durableGroupChatRooms(all = $groupChats.get()) {
       sessions: room.sessions || {},
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
+      roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
