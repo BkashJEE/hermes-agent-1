@@ -27,7 +27,10 @@ import {
   $selectedBot,
   $selectedRosterHydrated,
   $selectedRosterKey,
-  focusedMentionProfile
+  COLLAPSED_ROSTER_SECTIONS_KEY,
+  currentRosterSectionGeneration,
+  focusedMentionProfile,
+  hydrateCollapsedRosterSections
 } from './bot-state'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
@@ -195,6 +198,19 @@ export default {
     } catch {
       /* no storage — this window starts with no restored selection */
       $selectedRosterHydrated.set(true)
+    }
+
+    // Collapsed roster sections. Read the generation FIRST: a click during
+    // this round trip must win over the snapshot it raced.
+    try {
+      const generation = currentRosterSectionGeneration()
+
+      // @ts-expect-error same PluginStorage.get(key, fallback) shape as above.
+      Promise.resolve(ctx.storage?.get?.(COLLAPSED_ROSTER_SECTIONS_KEY))
+        .then(value => hydrateCollapsedRosterSections(value, generation))
+        .catch(() => undefined)
+    } catch {
+      /* no storage — every section starts expanded in this window */
     }
 
     // Bot Mode sessions are always hidden now — the old "hide Bot Chats"

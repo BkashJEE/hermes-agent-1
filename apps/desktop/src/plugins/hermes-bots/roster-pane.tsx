@@ -34,13 +34,16 @@ import { BotRow, GroupRow } from './bot-row'
 import {
   $botChatFocused,
   $botsPaneVisible,
+  $collapsedRosterSections,
   $openBotChat,
   $rosterHydrated,
   $selectedRosterHydrated,
   $selectedRosterKey,
   clearSelectedRosterKey,
   parseRosterKey,
-  saveSelectedRosterBot
+  pruneCollapsedRosterSections,
+  saveSelectedRosterBot,
+  setRosterSectionCollapsed
 } from './bot-state'
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
 import {
@@ -256,7 +259,7 @@ export function BotsPane() {
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
   const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
   const [gatewayFilter, setGatewayFilter] = useState('all')
-  const [collapsedRosterSections, setCollapsedRosterSections] = useState<Set<string>>(() => new Set())
+  const collapsedRosterSections = useValue($collapsedRosterSections)
   const hiddenSectionRef = useRef<null | HTMLDivElement>(null)
   const activityToasts = useValue($activityToasts)
   const groupChatName = useValue($groupChatWorkspace)
@@ -430,7 +433,7 @@ export function BotsPane() {
     activeFilterCount > 0
 
   const showRosterTools = showRosterSearch || showRosterFilters
-  const rosterSectionCollapsed = (id: string): boolean => !hasRosterConstraint && collapsedRosterSections.has(id)
+  const rosterSectionCollapsed = (id: string): boolean => !hasRosterConstraint && collapsedRosterSections.includes(id)
 
   const hiddenGatewaySections = rosterGatewaySections(
     matchingHiddenBots.map((bot: RosterRow) => ({
@@ -442,18 +445,19 @@ export function BotsPane() {
   )
 
   const toggleRosterSection = (id: string): void => {
-    setCollapsedRosterSections(previous => {
-      const next = new Set(previous)
-
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-
-      return next
-    })
+    setRosterSectionCollapsed(id, !collapsedRosterSections.includes(id))
   }
+
+  // Forget sections whose gateway is gone. rosterGatewayOptions rebuilds its
+  // array every render, so the dep is the id list joined into a stable string
+  // — otherwise this re-runs on every repaint instead of on a real connection
+  // add or delete.
+  const gatewayOptionIds = gatewayOptions.map(option => option?.connectionId || '').join(' ')
+
+  useEffect(() => {
+    pruneCollapsedRosterSections(gatewayOptions)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayOptionIds])
 
   useEffect(() => {
     if (!hiddenExpanded || hasRosterConstraint) {

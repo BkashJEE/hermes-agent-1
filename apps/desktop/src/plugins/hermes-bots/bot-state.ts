@@ -37,6 +37,91 @@ export const $selectedBot = atom('default')
  *  it never activates a gateway or creates a session. */
 export const $selectedRosterKey = atom('')
 export const $selectedRosterHydrated = atom(false)
+/** Collapsed roster section ids (`gateway:<connectionId>`, `group-chats`).
+ *  Presentation only: collapsing hides rows, it never detaches a gateway or
+ *  closes a chat. Module scope rather than pane state so the set survives an
+ *  unmount, and persisted so it survives a restart. */
+export const $collapsedRosterSections = atom<string[]>([])
+/** Bumped by every user toggle. The boot hydrate carries the generation it
+ *  read at, so a click landing while the storage read is still in flight is
+ *  not overwritten by the older snapshot when it resolves. */
+let rosterSectionMutationGeneration = 0
+
+export const COLLAPSED_ROSTER_SECTIONS_KEY = 'collapsed-roster-sections-v1'
+
+export function currentRosterSectionGeneration(): number {
+  return rosterSectionMutationGeneration
+}
+
+function persistCollapsedRosterSections(ids: string[]) {
+  try {
+    Promise.resolve(getPluginCtx()?.storage?.set?.(COLLAPSED_ROSTER_SECTIONS_KEY, ids)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — the collapse lasts for this window */
+  }
+}
+
+export function setRosterSectionCollapsed(id: string, collapsed: boolean) {
+  const key = String(id || '').trim()
+
+  if (!key) {
+    return
+  }
+
+  const next = new Set($collapsedRosterSections.get())
+
+  if (collapsed) {
+    next.add(key)
+  } else {
+    next.delete(key)
+  }
+
+  const ids = [...next]
+  rosterSectionMutationGeneration += 1
+  $collapsedRosterSections.set(ids)
+  persistCollapsedRosterSections(ids)
+}
+
+/** Apply a stored snapshot, unless a toggle already beat the read home. The
+ *  user's click is the newer truth; applying the snapshot now would silently
+ *  undo it. */
+export function hydrateCollapsedRosterSections(value: unknown, expectedGeneration: number) {
+  if (expectedGeneration !== rosterSectionMutationGeneration || !Array.isArray(value)) {
+    return
+  }
+
+  $collapsedRosterSections.set([
+    ...new Set(value.filter((id): id is string => typeof id === 'string' && Boolean(id.trim())).map(id => id.trim()))
+  ])
+}
+
+/** Drop stored ids for gateways that no longer exist, so a deleted connection
+ *  does not leave its section id in storage forever. Called with the FULL
+ *  gateway option list, never a search-filtered one — and never on an empty
+ *  list, which is what the roster looks like before sources have loaded. */
+export function pruneCollapsedRosterSections(gatewayOptions: { connectionId?: string }[] | null | undefined) {
+  const options = Array.isArray(gatewayOptions) ? gatewayOptions : []
+
+  if (!options.length) {
+    return
+  }
+
+  const live = new Set(options.map(option => String(option?.connectionId || '').trim()).filter(Boolean))
+  // `legacy` and `all` are synthesized bucket ids, not connections.
+  live.add('legacy')
+  live.add('all')
+
+  const current = $collapsedRosterSections.get()
+  const kept = current.filter(id => !id.startsWith('gateway:') || live.has(id.slice('gateway:'.length)))
+
+  if (kept.length === current.length) {
+    return
+  }
+
+  $collapsedRosterSections.set(kept)
+  persistCollapsedRosterSections(kept)
+}
+
 export const $rosterHydrated = atom(false)
 /** Mirrors host.paneVisibility('hermes-bots:pane') — wired in register(). */
 export const $botsPaneVisible = atom(false)
