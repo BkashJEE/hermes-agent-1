@@ -88,13 +88,18 @@ def _default_registry_path() -> Path:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    # NOT os.kill(pid, 0): on Windows CPython maps sig=0 onto CTRL_C_EVENT and
+    # routes it through GenerateConsoleCtrlEvent(0, pid), Ctrl+C-ing the whole
+    # console process group containing the target (bpo-14484). This function is
+    # a read-only probe — reconcile_startup_orphan calls it before deciding
+    # whether to touch anything — so on Windows it was killing the process it
+    # was only meant to ask about, plus unrelated siblings sharing its console.
+    # _pid_exists is the repo's cross-platform answer (psutil, ctypes
+    # OpenProcess fallback); it raises nothing we need to translate.
+    from gateway.status import _pid_exists
+
     try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+        return bool(_pid_exists(pid))
     except Exception:
         return False
 
@@ -544,7 +549,12 @@ class HostSupervisor:
                 return
             time.sleep(0.05)
         try:
-            os.kill(pid, signal.SIGKILL)
+            # signal.SIGKILL is POSIX-only — referencing it on Windows raises
+            # AttributeError, which the except below swallowed at debug level,
+            # so the escalation silently never happened. SIGTERM reaches
+            # TerminateProcess through os.kill on Windows, which is the
+            # force-kill this branch wants.
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             return
         except Exception:

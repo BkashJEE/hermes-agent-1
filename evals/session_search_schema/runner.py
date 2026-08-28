@@ -50,7 +50,7 @@ def _load_api_key() -> str:
         return key
     env_path = Path.home() / ".hermes" / ".env"
     if env_path.exists():
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("OPENROUTER_API_KEY="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     raise SystemExit("OPENROUTER_API_KEY not found (env or ~/.hermes/.env)")
@@ -65,7 +65,7 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
     if out.returncode != 0:
         raise SystemExit(f"git show {ref}: {out.stderr.strip()}")
     path = workdir / f"ss_arm_{name}.py"
-    path.write_text(out.stdout)
+    path.write_text(out.stdout, encoding="utf-8")
     return path
 
 
@@ -237,7 +237,7 @@ def main():
         outpath = outdir / (re.sub(r"[^\w.-]", "_", args.model) + ".jsonl")
         done = set()
         if outpath.exists():
-            for line in outpath.read_text().splitlines():
+            for line in outpath.read_text(encoding="utf-8").splitlines():
                 try:
                     r = json.loads(line)
                     done.add((r["task"], r["arm"], r["rep"]))

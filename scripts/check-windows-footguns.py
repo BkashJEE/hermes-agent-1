@@ -113,6 +113,17 @@ EXCLUDED_FILES = {
     "CONTRIBUTING.md",
 }
 
+# Directories --all walks past. Unlike EXCLUDED_DIRS these are still scanned
+# when named explicitly or reached through --diff / staged mode, so a footgun
+# introduced in a test is still caught at review time. `tests/` is skipped by
+# the full sweep only because it is overwhelmingly the larger half of the repo
+# and currently carries ~2.3k matches (nearly all bare read_text()); letting
+# them into the blocking CI sweep would bury the handful of production hits
+# this check exists to surface. Cleaning them up is its own campaign.
+FULL_SCAN_SKIP_DIRS = {
+    "tests",
+}
+
 
 @dataclass
 class Footgun:
@@ -456,6 +467,24 @@ def should_scan_file(path: Path) -> bool:
     return False
 
 
+def full_scan_roots() -> list[Path]:
+    """Top-level entries --all sweeps: the whole repo minus the skip lists.
+
+    Returns repo-root children rather than REPO_ROOT itself so the top-level
+    skip decision is explicit and testable; ``iter_files`` still applies
+    EXCLUDED_DIRS / EXCLUDED_SUFFIXES / EXCLUDED_FILES underneath each one.
+    Top-level *files* (cli.py, conftest.py, ...) are included — they were
+    invisible to the old package list.
+    """
+    return sorted(
+        child
+        for child in REPO_ROOT.iterdir()
+        if not child.name.startswith(".")
+        and child.name not in EXCLUDED_DIRS
+        and child.name not in FULL_SCAN_SKIP_DIRS
+    )
+
+
 def iter_files(paths: Iterable[Path]) -> Iterable[Path]:
     for p in paths:
         if p.is_file():
@@ -709,7 +738,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--all",
         action="store_true",
-        help="Scan the full repository (hermes_cli/, gateway/, tools/, cron/, etc.).",
+        help=(
+            "Scan the full repository (everything except "
+            f"{'/, '.join(sorted(FULL_SCAN_SKIP_DIRS))}/ and the always-excluded dirs)."
+        ),
     )
     p.add_argument(
         "--diff",
@@ -749,18 +781,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.all:
-        # Scan main Python packages + scripts
-        roots = [
-            REPO_ROOT / "hermes_cli",
-            REPO_ROOT / "gateway",
-            REPO_ROOT / "tools",
-            REPO_ROOT / "cron",
-            REPO_ROOT / "agent",
-            REPO_ROOT / "plugins",
-            REPO_ROOT / "scripts",
-            REPO_ROOT / "acp_adapter",
-        ]
-        roots = [r for r in roots if r.exists()]
+        # Walk the repository rather than a hand-maintained package list. The
+        # old list named eight directories and silently skipped everything
+        # else — tui_gateway/, evals/, providers/, skills/ and the top-level
+        # modules like cli.py — so the blocking CI sweep reported "no footguns
+        # found" for code it had never opened. Anything new at the repo root
+        # is now covered the day it lands instead of the day someone
+        # remembers to extend this list.
+        roots = full_scan_roots()
     elif args.diff:
         roots = get_diff_files(args.diff)
     elif args.paths:
