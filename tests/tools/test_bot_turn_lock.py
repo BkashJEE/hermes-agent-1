@@ -9,7 +9,6 @@ process, so threads exercise the true kernel-lock semantics.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -17,6 +16,13 @@ import threading
 import time
 
 import pytest
+
+# fcntl is POSIX-only. Importing it at module scope raised
+# ModuleNotFoundError on Windows during collection, which pytest counts as
+# a collection error and which aborts the whole run — not just this file.
+# These tests exercise real flock contention, so skipping the module is the
+# honest outcome; same idiom as tests/tools/test_file_sync_back.py.
+fcntl = pytest.importorskip("fcntl")
 
 from tools import bot_mode_dm, bot_relay
 from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
