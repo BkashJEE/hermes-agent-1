@@ -76,7 +76,9 @@ export function setRosterSectionCollapsed(id: string, collapsed: boolean) {
     next.delete(key)
   }
 
-  const ids = [...next]
+  // Sorted, not insertion-ordered: the same set of collapsed sections should
+  // serialize identically no matter what order the user clicked them in.
+  const ids = [...next].sort()
   rosterSectionMutationGeneration += 1
   $collapsedRosterSections.set(ids)
   persistCollapsedRosterSections(ids)
@@ -90,9 +92,11 @@ export function hydrateCollapsedRosterSections(value: unknown, expectedGeneratio
     return
   }
 
-  $collapsedRosterSections.set([
-    ...new Set(value.filter((id): id is string => typeof id === 'string' && Boolean(id.trim())).map(id => id.trim()))
-  ])
+  $collapsedRosterSections.set(
+    [
+      ...new Set(value.filter((id): id is string => typeof id === 'string' && Boolean(id.trim())).map(id => id.trim()))
+    ].sort()
+  )
 }
 
 /** Drop stored ids for gateways that no longer exist, so a deleted connection

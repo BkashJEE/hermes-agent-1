@@ -156,7 +156,9 @@ describe('pruning ids for gateways that are gone', () => {
 
     pruneCollapsedRosterSections([{ connectionId: 'alpha' }])
 
-    expect($collapsedRosterSections.get()).toEqual(['gateway:legacy', 'gateway:all'])
+    // Stored sorted, so the assertion reads in sorted order rather than the
+    // order the two were collapsed in.
+    expect($collapsedRosterSections.get()).toEqual(['gateway:all', 'gateway:legacy'])
   })
 
   it('is a no-op before sources load, so an empty list cannot wipe the set', async () => {
