@@ -166,7 +166,12 @@ class TestIsolatedProfileSoulScope:
 
         prev = getattr(web_server.app.state, "isolated", None)
         had = hasattr(web_server.app.state, "isolated")
+        prev_home = getattr(web_server.app.state, "isolated_home", None)
+        had_home = hasattr(web_server.app.state, "isolated_home")
         web_server.app.state.isolated = isolated
+        web_server.app.state.isolated_home = (
+            str(Path(os.environ["HERMES_HOME"]).resolve()) if isolated else None
+        )
         c = TestClient(web_server.app, raise_server_exceptions=False)
         c.headers["Authorization"] = "Bearer soul-test-token"
         try:
@@ -177,6 +182,10 @@ class TestIsolatedProfileSoulScope:
                 web_server.app.state.isolated = prev
             else:
                 delattr(web_server.app.state, "isolated")
+            if had_home:
+                web_server.app.state.isolated_home = prev_home
+            else:
+                delattr(web_server.app.state, "isolated_home")
 
     def test_cross_profile_soul_write_refused(self, isolated_home, monkeypatch):
         bob = isolated_home / "bob"

@@ -3515,7 +3515,11 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
         from gateway.status import read_runtime_status
-        homes = profiles_to_serve(True)
+        homes = (
+            [_isolated_profile_target()]
+            if _is_isolated_server()
+            else profiles_to_serve(True)
+        )
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {
@@ -3782,8 +3786,13 @@ async def get_status(profile: Optional[str] = None):
     # across that await. Status only resolves get_hermes_home() at call time
     # (config/env/gateway state), which the task-local contextvar covers.
     profile_dir: Optional[Path] = None
-    if requested_profile and requested_profile.lower() != "current":
-        profile_dir = _resolve_profile_dir(requested_profile)
+    if _is_isolated_server() or (
+        requested_profile and requested_profile.lower() != "current"
+    ):
+        if not requested_profile or requested_profile.lower() == "current":
+            _name, profile_dir = _isolated_profile_target()
+        else:
+            profile_dir = _resolve_authorized_profile_dir(requested_profile)
         status_scope = _config_profile_scope(requested_profile)
         status_scope.__enter__()
 
@@ -4733,15 +4742,26 @@ def _spawn_hermes_action(
     # trip the in-process restart-loop guard and exit 1 — silently failing the
     # dashboard's auto-restart paths. The gateway's own restart watcher already
     # drops it (gateway/run.py); mirror that here (#52470).
-    action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
+    action_env = {
+        **os.environ,
+        "HERMES_NONINTERACTIVE": "1",
+        **(env_overrides or {}),
+    }
     action_env.pop("_HERMES_GATEWAY", None)
+    if _is_isolated_server():
+        # This is the final subprocess boundary for every dashboard child
+        # action (gateway, skills, MCP, tools, checkpoints). Pin it centrally;
+        # a caller-provided override or later os.environ drift must not escape
+        # the exact home captured when the isolated server started.
+        _name, isolated_home = _isolated_profile_target()
+        action_env["HERMES_HOME"] = str(isolated_home)
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "env": {**action_env, **(env_overrides or {})},
+        "env": action_env,
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = windows_detach_flags()
@@ -4841,6 +4861,14 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     return _profile_cli_args(profile) + ["gateway", verb]
+
+
+def _profile_action_env() -> Optional[Dict[str, str]]:
+    """Pin isolated child commands to the server's immutable profile home."""
+    if not _is_isolated_server():
+        return None
+    _name, home = _isolated_profile_target()
+    return {"HERMES_HOME": str(home)}
 
 
 def _gateway_display_command(profile: Optional[str], verb: str) -> str:
@@ -4958,7 +4986,11 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
             )
             return recent_proc, True
 
-    proc = _spawn_hermes_action(subcommand, "gateway-restart")
+    proc = _spawn_hermes_action(
+        subcommand,
+        "gateway-restart",
+        env_overrides=_profile_action_env(),
+    )
     _LAST_GATEWAY_RESTART = (time.monotonic(), proc, tuple(subcommand))
     return proc, False
 
@@ -8195,7 +8227,7 @@ def _is_other_profile(profile: Optional[str]) -> bool:
     if not requested or requested.lower() == "current":
         return False
     try:
-        target = _resolve_profile_dir(requested)
+        target = _resolve_authorized_profile_dir(requested)
     except HTTPException:
         return True
     return target.resolve() != get_process_hermes_home().resolve()
@@ -10708,7 +10740,7 @@ def _multiplex_port_binding_conflict(
         # it — nothing to guard.
         target = get_active_profile_name()
     else:
-        _resolve_profile_dir(requested)  # same 400/404 as _profile_scope
+        _resolve_authorized_profile_dir(requested)  # same 400/404 as _profile_scope
         target = requested
     if target in ("default", "custom"):
         return None
@@ -11479,7 +11511,7 @@ def _oauth_profile_name(profile: Optional[str]) -> Optional[str]:
 def _validate_oauth_profile(profile: Optional[str]) -> None:
     profile_name = _oauth_profile_name(profile)
     if profile_name:
-        _resolve_profile_dir(profile_name)
+        _resolve_authorized_profile_dir(profile_name)
 
 
 def _new_oauth_session(
@@ -12889,6 +12921,9 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     GIL pressure on large profile pools.
     """
     from hermes_cli import profiles as profiles_mod
+    if _is_isolated_server():
+        name, home = _isolated_profile_target()
+        return [{"name": name, "path": str(home), "is_default": name == "default"}]
     try:
         return [
             {
@@ -12926,6 +12961,13 @@ def _cron_default_profile() -> str:
 def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod
+
+    if _is_isolated_server():
+        requested = (profile or "").strip()
+        if not requested or requested.lower() == "current":
+            return _isolated_profile_target()
+        profile_dir = _resolve_authorized_profile_dir(requested)
+        return profiles_mod.normalize_profile_name(requested), profile_dir
 
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
@@ -13897,7 +13939,7 @@ def _pairing_store(profile: Optional[str] = None):
     if not requested or requested.lower() == "current":
         return PairingStore()
 
-    _resolve_profile_dir(requested)  # 400/404 on an unknown profile
+    _resolve_authorized_profile_dir(requested)  # 400/404 on an unknown profile
 
     return PairingStore(profile=requested)
 
@@ -14133,7 +14175,11 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 @app.post("/api/gateway/start")
 async def start_gateway(profile: Optional[str] = None):
     try:
-        proc = _spawn_hermes_action(_gateway_subcommand(profile, "start"), "gateway-start")
+        proc = _spawn_hermes_action(
+            _gateway_subcommand(profile, "start"),
+            "gateway-start",
+            env_overrides=_profile_action_env(),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -14145,7 +14191,11 @@ async def start_gateway(profile: Optional[str] = None):
 @app.post("/api/gateway/stop")
 async def stop_gateway(profile: Optional[str] = None):
     try:
-        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
+        proc = _spawn_hermes_action(
+            _gateway_subcommand(profile, "stop"),
+            "gateway-stop",
+            env_overrides=_profile_action_env(),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -14816,9 +14866,14 @@ def _profile_cli_args(profile: Optional[str]) -> List[str]:
     """
     requested = (profile or "").strip()
     if not requested or requested.lower() in {"current", "default"}:
+        if _is_isolated_server():
+            name, _home = _isolated_profile_target()
+            if requested.lower() == "default" and name != "default":
+                _resolve_authorized_profile_dir("default")
+            return ["-p", name] if name not in {"default", "custom"} else []
         return []
     from hermes_cli import profiles as profiles_mod
-    _resolve_profile_dir(requested)
+    _resolve_authorized_profile_dir(requested)
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
@@ -14895,7 +14950,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
 
         requested = (profile or "").strip()
         if requested and requested.lower() != "current":
-            profile_dir = _resolve_profile_dir(requested)
+            profile_dir = _resolve_authorized_profile_dir(requested)
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         else:
             lock = HubLockFile()
@@ -15030,6 +15085,9 @@ def _current_profile_name() -> str:
     """Return the profile this dashboard process is scoped to (or 'default')."""
     from hermes_cli import profiles as profiles_mod
 
+    if _is_isolated_server():
+        return _isolated_profile_target()[0]
+
     try:
         return profiles_mod.get_active_profile_name() or "default"
     except Exception:
@@ -15048,9 +15106,121 @@ def _resolve_profile_dir(name: str) -> Path:
     return profiles_mod.get_profile_dir(name)
 
 
+def _isolated_profile_target() -> Tuple[str, Path]:
+    """Return the immutable ``(label, home)`` owned by an isolated server.
+
+    Authorization is path-based, never label-based. In particular, ``custom``
+    is only a presentation label for an out-of-tree HERMES_HOME; it must not
+    authorize the real named profile ``profiles/custom``. ``start_server``
+    captures the home once at launch so later active-profile changes or
+    identity-derivation failures cannot widen the process's authority.
+    """
+    if not _is_isolated_server():
+        raise RuntimeError("isolated profile target requested on a unified server")
+
+    raw_home = getattr(app.state, "isolated_home", None)
+    if not raw_home:
+        raise HTTPException(
+            status_code=403,
+            detail="This isolated dashboard has no pinned profile home; refusing profile access.",
+        )
+
+    from hermes_cli import profiles as profiles_mod
+
+    home = Path(raw_home).expanduser().resolve(strict=False)
+    default_home = profiles_mod.get_profile_dir("default").resolve(strict=False)
+    if home == default_home:
+        return "default", home
+
+    profiles_root = profiles_mod._get_profiles_root().resolve(strict=False)
+    try:
+        rel = home.relative_to(profiles_root)
+    except ValueError:
+        return "custom", home
+    if len(rel.parts) == 1:
+        candidate = rel.parts[0]
+        try:
+            profiles_mod.validate_profile_name(candidate)
+        except ValueError:
+            pass
+        else:
+            return candidate, home
+    return "custom", home
+
+
+def _assert_profile_home_in_scope(name: str) -> Path:
+    """Validate a named selector against the pinned isolated home.
+
+    The path comparison happens before any existence probe, preventing both
+    sibling reads and a profile-existence oracle on isolated servers.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        canon = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    candidate = profiles_mod.get_profile_dir(canon).resolve(strict=False)
+    label, isolated_home = _isolated_profile_target()
+    if candidate != isolated_home:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"This dashboard is isolated to profile '{label}'. "
+                f"Refusing to access another profile ('{canon}')."
+            ),
+        )
+    return candidate
+
+
+def _resolve_authorized_profile_dir(name: str) -> Path:
+    """Resolve a selector after enforcing the isolated-server boundary."""
+    if _is_isolated_server():
+        _assert_profile_home_in_scope(name)
+    return _resolve_profile_dir(name)
+
+
+def _isolated_profile_dict() -> Dict[str, Any]:
+    """Build the profile-list row for the isolated home without enumeration."""
+    from hermes_cli import profiles as profiles_mod
+
+    name, home = _isolated_profile_target()
+
+    def _safe(callable_, default):
+        try:
+            return callable_()
+        except Exception:
+            return default
+
+    model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
+    meta = _safe(lambda: profiles_mod.read_profile_meta(home), {})
+    dist_name, dist_version, dist_source = _safe(
+        lambda: profiles_mod._read_distribution_meta(home), (None, None, None)
+    )
+    return {
+        "name": name,
+        "path": str(home),
+        "is_default": name == "default",
+        "model": model,
+        "provider": provider,
+        "has_env": (home / ".env").exists(),
+        "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
+        "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(home), False),
+        "description": meta.get("description", ""),
+        "description_auto": bool(meta.get("description_auto", False)),
+        "display_name": meta.get("display_name", ""),
+        "distribution_name": dist_name,
+        "distribution_version": dist_version,
+        "distribution_source": dist_source,
+        "has_alias": False,
+    }
+
+
 def _profile_setup_command(name: str) -> str:
     """Return the shell command used to configure a profile in the CLI."""
-    _resolve_profile_dir(name)
+    _resolve_authorized_profile_dir(name)
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
@@ -15255,9 +15425,13 @@ def _profile_scope(profile: Optional[str]):
 
     token = None
     if not requested or requested.lower() == "current":
-        profile_dir = get_hermes_home()
+        if _is_isolated_server():
+            _name, profile_dir = _isolated_profile_target()
+            token = set_hermes_home_override(str(profile_dir))
+        else:
+            profile_dir = get_hermes_home()
     else:
-        profile_dir = _resolve_profile_dir(requested)
+        profile_dir = _resolve_authorized_profile_dir(requested)
         token = set_hermes_home_override(str(profile_dir))
 
     with _SKILLS_PROFILE_LOCK:
@@ -15294,11 +15468,26 @@ def _config_profile_scope(profile: Optional[str]):
     which is all endpoints that resolve ``get_hermes_home()`` at call time
     (config, env, gateway status) actually need.
 
-    None/""/"current" means the dashboard's own profile — no override.
+    None/""/"current" means the dashboard's own profile. On an isolated
+    server that is the immutable launch-time home, not mutable process state.
     """
     requested = (profile or "").strip()
     if not requested or requested.lower() == "current":
-        yield None
+        if not _is_isolated_server():
+            yield None
+            return
+
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        _name, profile_dir = _isolated_profile_target()
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            yield profile_dir
+        finally:
+            reset_hermes_home_override(token)
         return
 
     from hermes_constants import (
@@ -15306,7 +15495,7 @@ def _config_profile_scope(profile: Optional[str]):
         reset_hermes_home_override,
     )
 
-    profile_dir = _resolve_profile_dir(requested)
+    profile_dir = _resolve_authorized_profile_dir(requested)
     token = set_hermes_home_override(str(profile_dir))
     try:
         yield profile_dir
@@ -16586,7 +16775,7 @@ def _resolve_chat_argv(
     profile_dir: Optional[Path] = None
     requested = (profile or "").strip()
     if requested and requested.lower() != "current":
-        profile_dir = _resolve_profile_dir(requested)
+        profile_dir = _resolve_authorized_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     # Hermes TUI child: build via the single spawn-env factory (profile-home
@@ -17132,7 +17321,7 @@ async def console_ws(ws: WebSocket) -> None:
 
         engine = HermesConsoleEngine(output_limit=_CONSOLE_OUTPUT_LIMIT)
         if profile and profile.lower() != "current":
-            _resolve_profile_dir(profile)
+            _resolve_authorized_profile_dir(profile)
     except HTTPException as exc:
         await _console_send(
             ws,
@@ -19607,6 +19796,14 @@ def start_server(
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
     app.state.isolated = bool(isolated)
+    if isolated:
+        from hermes_constants import get_hermes_home
+
+        app.state.isolated_home = str(
+            Path(get_hermes_home()).expanduser().resolve(strict=False)
+        )
+    else:
+        app.state.isolated_home = None
 
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
     # the `serve` path in main.py (which applies the same floor). Canonical

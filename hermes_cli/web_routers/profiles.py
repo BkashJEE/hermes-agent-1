@@ -71,11 +71,14 @@ router = APIRouter()
 # Late-bound web_server helpers (resolved at call time; cycle-safe,
 # monkeypatch-transparent).
 _cron_profile_home = late("_cron_profile_home")
+_assert_profile_home_in_scope = late("_assert_profile_home_in_scope")
 _current_profile_name = late("_current_profile_name")
 _disable_unselected_skills = late("_disable_unselected_skills")
 _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
 _is_isolated_server = late("_is_isolated_server")
+_isolated_profile_dict = late("_isolated_profile_dict")
+_isolated_profile_target = late("_isolated_profile_target")
 _open_session_db_at_path = late("_open_session_db_at_path")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
@@ -258,7 +261,12 @@ def get_profiles_sessions(
     from hermes_cli import profiles as profiles_mod
 
     targets: List[Tuple[str, Path]] = []
-    if profile and profile != "all":
+    if _is_isolated_server():
+        requested = (profile or "all").strip() or "all"
+        if requested.lower() not in {"all", "current"}:
+            _assert_profile_in_scope(requested)
+        targets.append(_isolated_profile_target())
+    elif profile and profile != "all":
         name, home = _cron_profile_home(profile)
         targets.append((name, home))
     else:
@@ -404,17 +412,22 @@ def get_profiles_sessions_sidebar(
     """
     from hermes_cli import profiles as profiles_mod
 
-    try:
-        # Session aggregation only needs name/path; the lightweight enumerator
-        # avoids YAML/meta/gateway/skill probes for all profiles per refresh.
-        targets: List[Tuple[str, Path]] = profiles_mod.profiles_to_serve(multiplex=True)
-    except Exception:
-        _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
-        targets = []
-    if not targets:
-        targets.append(("default", profiles_mod.get_profile_dir("default")))
-
     recents_scope = (recents_profile or "all").strip() or "all"
+    if _is_isolated_server():
+        if recents_scope.lower() not in {"all", "current"}:
+            _assert_profile_in_scope(recents_scope)
+        targets: List[Tuple[str, Path]] = [_isolated_profile_target()]
+    else:
+        try:
+            # Session aggregation only needs name/path; the lightweight enumerator
+            # avoids YAML/meta/gateway/skill probes for all profiles per refresh.
+            targets = profiles_mod.profiles_to_serve(multiplex=True)
+        except Exception:
+            _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
+            targets = []
+        if not targets:
+            targets.append(("default", profiles_mod.get_profile_dir("default")))
+
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
 
@@ -645,15 +658,16 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tui_gateway import server as gateway_server
 
-    try:
-        targets: List[Tuple[str, Path]] = [
-            (info.name, info.path) for info in profiles_mod.list_profiles()
-        ]
-    except Exception:
-        _log.exception("GET /api/profiles/projects/tree: list_profiles failed")
-        targets = []
-    if not targets:
-        targets.append(("default", profiles_mod.get_profile_dir("default")))
+    if _is_isolated_server():
+        targets: List[Tuple[str, Path]] = [_isolated_profile_target()]
+    else:
+        try:
+            targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
+        except Exception:
+            _log.exception("GET /api/profiles/projects/tree: list_profiles failed")
+            targets = []
+        if not targets:
+            targets.append(("default", profiles_mod.get_profile_dir("default")))
 
     merged: Dict[str, Dict[str, Any]] = {}
     scoped_session_ids: List[str] = []
@@ -739,13 +753,16 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
     if not wanted:
         return {"pull_requests": {}, "scanned": []}
 
-    try:
-        targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
-    except Exception:
-        _log.exception("POST /api/profiles/sessions/pull-requests: list_profiles failed")
-        targets = []
-    if not targets:
-        targets.append(("default", profiles_mod.get_profile_dir("default")))
+    if _is_isolated_server():
+        targets = [_isolated_profile_target()]
+    else:
+        try:
+            targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
+        except Exception:
+            _log.exception("POST /api/profiles/sessions/pull-requests: list_profiles failed")
+            targets = []
+        if not targets:
+            targets.append(("default", profiles_mod.get_profile_dir("default")))
 
     found: Dict[str, Dict[str, Any]] = {}
     for name, home in targets:
@@ -779,6 +796,8 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+    if _is_isolated_server():
+        return {"profiles": [_isolated_profile_dict()]}
     try:
         profiles = await run_in_threadpool(profiles_mod.list_profiles)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
@@ -916,6 +935,9 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
+    if _is_isolated_server():
+        current, _home = _isolated_profile_target()
+        return {"active": current, "current": current}
     try:
         active = profiles_mod.get_active_profile() or "default"
     except Exception:
@@ -1086,17 +1108,7 @@ def _assert_profile_in_scope(name: str) -> None:
     if not _is_isolated_server():
         # Unified machine dashboard: cross-profile management is by design.
         return
-    current = _current_profile_name()
-    # Asking for the very profile this server is scoped to is always fine.
-    if current == name:
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            f"This dashboard is isolated to profile '{current}'. "
-            f"Refusing to access another profile ('{name}')."
-        ),
-    )
+    _assert_profile_home_in_scope(name)
 
 
 def _assert_machine_control_plane_allowed(action: str) -> None:
