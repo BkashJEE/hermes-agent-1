@@ -15,7 +15,7 @@ export {}
 declare global {
   interface Window {
     hermesCredential?: {
-      getRequest: () => Promise<{ envVar: string; prompt: string }>
+      getRequest: () => Promise<{ envVar: string; locale: string; prompt: string }>
       submit: (value: string) => Promise<{ ok: boolean; error?: string }>
       cancel: () => Promise<{ ok: boolean }>
     }
@@ -80,6 +80,7 @@ declare global {
       secureCredential?: {
         capture: (request: {
           envVar: string
+          locale?: string
           profile?: null | string
           prompt?: string
           requestId: string

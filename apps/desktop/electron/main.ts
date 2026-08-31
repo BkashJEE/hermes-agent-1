@@ -13740,6 +13740,7 @@ type CredentialCaptureResult = { status: 'busy' | 'cancelled' | 'saved' }
 
 type PendingCredentialCapture = {
   envVar: string
+  locale: string
   profile: null | string
   prompt: string
   promise: Promise<CredentialCaptureResult>
@@ -13781,8 +13782,14 @@ ipcMain.handle('hermes:credential:capture', (event, rawRequest) => {
   const envVar = typeof rawRequest?.envVar === 'string' ? rawRequest.envVar.trim() : ''
   const prompt = typeof rawRequest?.prompt === 'string' ? rawRequest.prompt.trim().slice(0, 500) : ''
   const profile = typeof rawRequest?.profile === 'string' ? rawRequest.profile.trim() || null : null
+  const locale = typeof rawRequest?.locale === 'string' ? rawRequest.locale.trim().slice(0, 16) : 'en'
 
-  if (!requestId || !/^[A-Z][A-Z0-9_]{1,127}$/.test(envVar)) {
+  if (
+    !BrowserWindow.fromWebContents(event.sender) ||
+    !requestId ||
+    !/^[A-Z][A-Z0-9_]{0,127}$/.test(envVar) ||
+    (profile !== null && profile !== 'default' && !PROFILE_NAME_RE.test(profile))
+  ) {
     throw new Error('Invalid secure credential request.')
   }
 
@@ -13837,6 +13844,7 @@ ipcMain.handle('hermes:credential:capture', (event, rawRequest) => {
 
   const pending: PendingCredentialCapture = {
     envVar,
+    locale,
     profile,
     prompt,
     promise,
@@ -13869,7 +13877,7 @@ ipcMain.handle('hermes:credential:request:get', event => {
     throw new Error('Credential request is no longer available.')
   }
 
-  return { envVar: pending.envVar, prompt: pending.prompt }
+  return { envVar: pending.envVar, locale: pending.locale, prompt: pending.prompt }
 })
 
 ipcMain.handle('hermes:credential:submit', async (event, payload) => {
@@ -13879,7 +13887,7 @@ ipcMain.handle('hermes:credential:submit', async (event, payload) => {
     return { error: 'Credential request is no longer available.', ok: false }
   }
 
-  const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
+  const value = typeof payload?.value === 'string' ? payload.value : ''
 
   if (!value || value.length > 65_536) {
     return { error: 'Enter a credential before saving.', ok: false }

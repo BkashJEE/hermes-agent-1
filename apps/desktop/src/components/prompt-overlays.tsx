@@ -142,7 +142,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
 const activeCredentialCaptures = new Map<string, Promise<void>>()
 
 function SecretDialog({ sessionId }: { sessionId: string | null }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const copy = t.prompts
   const $request = useMemo(() => sessionSecretRequest(sessionId), [sessionId])
   const request = useStore($request)
@@ -166,6 +166,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       try {
         const result = await capture({
           envVar: request.envVar,
+          locale,
           profile,
           prompt: request.prompt,
           requestId: request.requestId
@@ -197,7 +198,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
     })()
 
     activeCredentialCaptures.set(request.requestId, task)
-  }, [copy.gatewayDisconnected, copy.secretSendFailed, gateway, profile, request])
+  }, [copy.gatewayDisconnected, copy.secretSendFailed, gateway, locale, profile, request])
 
   // The actual input lives in the dedicated native window. Rendering no form
   // here ensures password managers, DOM inspection, and chat capture cannot

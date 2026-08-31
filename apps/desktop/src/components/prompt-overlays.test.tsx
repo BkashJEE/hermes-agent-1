@@ -69,6 +69,7 @@ describe('PromptOverlays', () => {
     await waitFor(() => expect($secretRequest.get()).toBeNull())
     expect(capture).toHaveBeenCalledWith({
       envVar: 'TEST_SECRET',
+      locale: 'en',
       profile: 'default',
       prompt: 'Paste a secret',
       requestId: 'secret-1'
