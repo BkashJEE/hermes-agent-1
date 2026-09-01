@@ -370,7 +370,7 @@ interface GroupChatSettingsDialogProps {
  *  rides the room record; the member set is replaced wholesale so a removal
  *  actually un-seats the bot. All three apply on Save so a cancelled dialog
  *  changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+export function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
