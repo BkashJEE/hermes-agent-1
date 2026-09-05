@@ -116,7 +116,7 @@ export function tailscaleBinaryCandidates(
   if (platform === 'win32') {
     for (const root of [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA]) {
       if (root) {
-        candidates.push(path.join(root, 'Tailscale', 'tailscale.exe'))
+        candidates.push(path.win32.join(root, 'Tailscale', 'tailscale.exe'))
       }
     }
   } else if (platform === 'darwin') {
