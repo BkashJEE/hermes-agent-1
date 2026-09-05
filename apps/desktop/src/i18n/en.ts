@@ -863,6 +863,11 @@ export const en: Translations = {
         'Set dashboard.public_url to a private HTTPS address that reaches this gateway, then try again. Localhost and plain HTTP cannot be paired.',
       tokenRequired:
         'This connection cannot issue a reusable local gateway token. Switch to a token-authenticated Hermes gateway to pair the phone.',
+      routeStale:
+        'This private phone address no longer reaches the current Desktop gateway. Refreshing updates only its matching Tailscale HTTPS port and keeps every other Serve route.',
+      refreshRoute: 'Refresh secure route',
+      routeRefreshFailed:
+        'Hermes could not refresh this Tailscale route. Confirm Tailscale is installed and connected, then try again.',
       failed: 'Hermes could not create a mobile pairing code. Check that the gateway is connected and try again.'
     },
     gateway: {

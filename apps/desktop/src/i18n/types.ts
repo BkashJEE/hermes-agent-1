@@ -734,6 +734,9 @@ export interface Translations {
       qrAlt: string
       publicUrlRequired: string
       tokenRequired: string
+      routeStale: string
+      refreshRoute: string
+      routeRefreshFailed: string
       failed: string
     }
     gateway: {

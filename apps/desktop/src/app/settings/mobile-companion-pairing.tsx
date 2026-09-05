@@ -15,7 +15,7 @@ type PairingView =
   | { kind: 'hidden' }
   | { kind: 'loading' }
   | { dataUrl: string; kind: 'ready' }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string; refreshPublicUrl?: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -87,6 +87,7 @@ export function MobileCompanionPairing() {
   const { t } = useI18n()
   const copy = t.settings.mobilePairing
   const [view, setView] = useState<PairingView>({ kind: 'hidden' })
+  const [isRefreshingRoute, setIsRefreshingRoute] = useState(false)
   const generationRef = useRef(0)
 
   const hide = useCallback(() => {
@@ -121,6 +122,14 @@ export function MobileCompanionPairing() {
         throw new Error('oauth-not-shareable')
       }
 
+      const routeStatus = await desktop.mobileCompanion?.probeRoute(publicUrl)
+
+      if (routeStatus?.managed && !routeStatus.ok) {
+        setView({ kind: 'error', message: copy.routeStale, refreshPublicUrl: publicUrl })
+
+        return
+      }
+
       const websocketUrl = await resolveGatewayWsUrl(desktop, connection)
       const payload = buildMobilePairingPayload(publicUrl, websocketUrl)
 
@@ -150,7 +159,32 @@ export function MobileCompanionPairing() {
 
       setView({ kind: 'error', message })
     }
-  }, [copy.failed, copy.publicUrlRequired, copy.tokenRequired, requestGateway])
+  }, [copy.failed, copy.publicUrlRequired, copy.routeStale, copy.tokenRequired, requestGateway])
+
+  const refreshRoute = useCallback(async () => {
+    if (view.kind !== 'error' || !view.refreshPublicUrl) {
+      return
+    }
+
+    const publicUrl = view.refreshPublicUrl
+    setIsRefreshingRoute(true)
+
+    try {
+      const result = await window.hermesDesktop?.mobileCompanion?.refreshRoute(publicUrl)
+
+      if (!result?.ok) {
+        setView({ kind: 'error', message: copy.routeRefreshFailed, refreshPublicUrl: publicUrl })
+
+        return
+      }
+
+      await generate()
+    } catch {
+      setView({ kind: 'error', message: copy.routeRefreshFailed, refreshPublicUrl: publicUrl })
+    } finally {
+      setIsRefreshingRoute(false)
+    }
+  }, [copy.routeRefreshFailed, generate, view])
 
   useEffect(() => {
     if (view.kind !== 'ready') {
@@ -195,10 +229,23 @@ export function MobileCompanionPairing() {
                 {view.message}
               </p>
             ) : null}
-            <Button disabled={view.kind === 'loading'} onClick={() => void generate()} size="sm">
-              {view.kind === 'loading' ? <Loader2 className="animate-spin" /> : null}
-              {view.kind === 'error' ? copy.retry : copy.show}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {view.kind === 'error' && view.refreshPublicUrl ? (
+                <Button disabled={isRefreshingRoute} onClick={() => void refreshRoute()} size="sm">
+                  {isRefreshingRoute ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                  {copy.refreshRoute}
+                </Button>
+              ) : null}
+              <Button
+                disabled={view.kind === 'loading' || isRefreshingRoute}
+                onClick={() => void generate()}
+                size="sm"
+                variant={view.kind === 'error' && view.refreshPublicUrl ? 'textStrong' : 'default'}
+              >
+                {view.kind === 'loading' ? <Loader2 className="animate-spin" /> : null}
+                {view.kind === 'error' ? copy.retry : copy.show}
+              </Button>
+            </div>
           </div>
         )}
       </div>

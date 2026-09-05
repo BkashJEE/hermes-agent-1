@@ -270,6 +270,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { probeMobileCompanionRoute, refreshMobileCompanionRoute } from './mobile-companion-route'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -14876,6 +14877,29 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
+})
+ipcMain.handle('hermes:mobile-companion:probe-route', async (_event, publicUrl) => {
+  return probeMobileCompanionRoute(typeof publicUrl === 'string' ? publicUrl : '')
+})
+ipcMain.handle('hermes:mobile-companion:refresh-route', async (_event, publicUrl) => {
+  const connection = await ensureBackend(null)
+
+  if (connection.mode === 'remote') {
+    return { error: 'unsupported-backend', managed: true, ok: false }
+  }
+
+  const result = await refreshMobileCompanionRoute(
+    typeof publicUrl === 'string' ? publicUrl : '',
+    connection.baseUrl
+  )
+
+  rememberLog(
+    result.ok
+      ? '[mobile-pairing] refreshed the managed private route to the current Desktop backend'
+      : `[mobile-pairing] managed route refresh failed (${result.error || 'unknown'})`
+  )
+
+  return result
 })
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {

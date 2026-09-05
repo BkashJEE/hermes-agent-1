@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   getConnection: vi.fn(),
   getGatewayWsUrl: vi.fn(),
+  probeRoute: vi.fn(),
+  refreshRoute: vi.fn(),
   requestGateway: vi.fn(),
   toDataURL: vi.fn()
 }))
@@ -31,13 +33,19 @@ beforeEach(() => {
     ok: true,
     wsUrl: 'ws://127.0.0.1:51732/api/ws?token=fresh-secret'
   })
+  mocks.probeRoute.mockResolvedValue({ managed: true, ok: true })
+  mocks.refreshRoute.mockResolvedValue({ managed: true, ok: true })
   mocks.toDataURL.mockResolvedValue('data:image/png;base64,pairing-code')
 
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: {
       getConnection: mocks.getConnection,
-      getGatewayWsUrl: mocks.getGatewayWsUrl
+      getGatewayWsUrl: mocks.getGatewayWsUrl,
+      mobileCompanion: {
+        probeRoute: mocks.probeRoute,
+        refreshRoute: mocks.refreshRoute
+      }
     }
   })
 })
@@ -68,9 +76,7 @@ describe('mobile companion pairing payload', () => {
     'https://127.0.0.1:9443',
     'https://user:password@desktop.example.ts.net'
   ])('rejects an unsafe public gateway URL: %s', publicUrl => {
-    expect(() => buildMobilePairingPayload(publicUrl, 'ws://127.0.0.1/api/ws?token=safe')).toThrow(
-      'invalid-public-url'
-    )
+    expect(() => buildMobilePairingPayload(publicUrl, 'ws://127.0.0.1/api/ws?token=safe')).toThrow('invalid-public-url')
   })
 
   it('rejects one-time OAuth tickets and missing tokens', () => {
@@ -101,6 +107,7 @@ describe('mobile companion pairing payload', () => {
     expect(qr.getAttribute('src')).toBe('data:image/png;base64,pairing-code')
     expect(mocks.requestGateway).toHaveBeenCalledWith('config.get', { key: 'full' })
     expect(mocks.getGatewayWsUrl).toHaveBeenCalledWith(null)
+    expect(mocks.probeRoute).toHaveBeenCalledWith('https://desktop.example.ts.net:9443')
     expect(mocks.toDataURL).toHaveBeenCalledTimes(1)
 
     const payload = mocks.toDataURL.mock.calls[0][0] as string
@@ -119,5 +126,23 @@ describe('mobile companion pairing payload', () => {
     await waitFor(() => expect(screen.getByText(/Set dashboard\.public_url/)).toBeTruthy())
     expect(screen.queryByRole('img')).toBeNull()
     expect(mocks.toDataURL).not.toHaveBeenCalled()
+  })
+
+  it('requires a separate user action before repairing a stale managed route', async () => {
+    mocks.probeRoute.mockResolvedValueOnce({ error: 'route-unreachable', managed: true, ok: false })
+    render(<MobileCompanionPairing />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show pairing code' }))
+
+    await screen.findByText(/no longer reaches the current Desktop gateway/)
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(mocks.refreshRoute).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh secure route' }))
+
+    await screen.findByRole('img', { name: 'Hermes mobile companion pairing QR code' })
+    expect(mocks.refreshRoute).toHaveBeenCalledWith('https://desktop.example.ts.net:9443')
+    expect(mocks.refreshRoute).toHaveBeenCalledTimes(1)
+    expect(mocks.probeRoute).toHaveBeenCalledTimes(2)
   })
 })
