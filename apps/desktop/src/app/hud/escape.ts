@@ -33,10 +33,10 @@ export function hudEscapeAction(root: Element, active: Element | null, defaultPr
 /**
  * Escape dismisses the HUD.
  *
- * Listens on the window in the capture phase so a press reaches the decision
- * before any bubbling handler, but defers to anything that has already claimed
- * it (see `hudEscapeAction`). Closing goes through the store so main restores
- * the app window exactly as it does for ⌘W and the exit button.
+ * Listens on the window in the bubble phase so editor and overlay handlers
+ * can consume the press first (see `hudEscapeAction`). Closing goes through
+ * the store so main restores the app window exactly as it does for ⌘W and
+ * the exit button.
  */
 export function useHudEscape(rootRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {
