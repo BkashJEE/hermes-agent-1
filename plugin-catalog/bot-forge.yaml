@@ -1,0 +1,20 @@
+name: bot-forge
+repo: https://github.com/BkashJEE/hermes-bot-forge
+sha: 5b87d6de7b90690ebc766dd70647d6e24c83a1af
+description: Say "make me a <role>" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback.
+maintainer: BkashJEE
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/BkashJEE/hermes-bot-forge#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/5b87d6de7b90690ebc766dd70647d6e24c83a1af/docs/banner.png
+platforms: []
+capabilities:
+  provides_tools:
+    - create_agent
+    - list_agents
+    - ask_agent
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
