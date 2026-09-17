@@ -227,6 +227,12 @@ The app also surfaces the broader Hermes management surface so you don't have to
 Use the list and card icons at the right of the Browse filters to change layouts.
 The choice is remembered across Skills and Plugins. Search and filters stay in
 place; click a card to open its details or use its Install button directly.
+Cards use compact layouts, colorful raised brand or capability icons, and a **What it does**
+bullet preview from the catalog description. The full description remains in the
+detail dialog. Browse categories with the dropdown, horizontal category buttons,
+arrow buttons, or keyboard-accessible slider; the selected category stays in sync
+across these controls. The filters remain above the scrolling results. **Install
+from Git** on the Plugins tab continues to open the existing repository import flow.
 
 #### Where Browse gets its data
 

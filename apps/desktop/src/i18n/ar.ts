@@ -2,6 +2,12 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   catalog: {
+    whatItDoes: 'ما الذي يفعله',
+    noDescription: 'لا يوجد ملخص. افتح التفاصيل لمراجعة هذا العنصر.',
+    previousCategory: 'الفئة السابقة',
+    nextCategory: 'الفئة التالية',
+    chooseCategory: 'اختر الفئة',
+
     listView: 'عرض القائمة',
     cardView: 'عرض البطاقات',
     installTitle: (name: string) => `تثبيت «${name}»؟`,

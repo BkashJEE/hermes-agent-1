@@ -28,8 +28,8 @@ function setup(kind: CatalogKind) {
     installIdentifier: `official/${name}`,
     source: 'official',
     tier: 'official',
-    category: 'research',
-    description: `${name} research workflow`,
+    category: name === 'alpha' ? 'research' : 'writing',
+    description: `${name} research workflow. Keeps original wording and version 1.0 intact.`,
     repo: `https://github.com/example/${name}`,
     sourceUrl: `https://github.com/example/${name}`,
     docsUrl: `https://example.com/${name}`
@@ -73,6 +73,37 @@ describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
     expect(within(cards[0]).getByRole('button', { name: 'alpha' }).classList.contains('row-hover')).toBe(false)
     expect(container.querySelector('[data-catalog-list]')).toBeNull()
     expect(within(cards[1]).getByRole<HTMLButtonElement>('button', { name: 'Installed' }).disabled).toBe(true)
+  })
+
+  it('shows source-backed summary bullets and preserves the full description in details', () => {
+    const { entries } = setup(kind)
+    const card = screen.getAllByRole('article')[0]
+    const summary = within(card).getByRole('list', { name: 'What it does' })
+
+    expect(within(summary).getAllByRole('listitem').map(item => item.textContent)).toEqual([
+      '•alpha research workflow.',
+      '•Keeps original wording and version 1.0 intact.'
+    ])
+    fireEvent.click(within(card).getByRole('button', { name: 'alpha' }))
+    expect(within(screen.getByRole('dialog')).getByText(entries[0].description)).toBeTruthy()
+  })
+
+  it('keeps the slider, category chips, dropdown, and install target in sync', () => {
+    const { entries, onInstall } = setup(kind)
+    const slider = screen.getByRole('slider', { name: 'Choose category' })
+
+    fireEvent.change(slider, { target: { value: '2' } })
+    expect(screen.getAllByRole('article')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'beta' })).toBeTruthy()
+    expect(slider.getAttribute('aria-valuetext')).toBe('Writing')
+    expect(screen.getByRole('combobox', { name: 'Category' }).textContent).toContain('Writing')
+    fireEvent.click(screen.getByRole('button', { name: 'Previous category' }))
+    expect(screen.getByRole('button', { name: 'alpha' })).toBeTruthy()
+    fireEvent.click(within(screen.getAllByRole('article')[0]).getByRole('button', { name: 'Install' }))
+    expect(onInstall).toHaveBeenCalledExactlyOnceWith(entries[0])
+    fireEvent.click(screen.getByRole('button', { name: /All categories/ }))
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(slider.getAttribute('aria-valuetext')).toBe('All categories')
   })
 
   it('offers installation directly on a card without opening its details', () => {

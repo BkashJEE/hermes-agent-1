@@ -25,6 +25,8 @@ export interface AvatarChipBrand {
 
 interface AvatarChipProps extends Omit<ComponentPropsWithoutRef<'span'>, 'children'> {
   brand?: AvatarChipBrand | null
+  /** Optional bevel and depth for capability catalog tiles; other identities stay flat. */
+  variant?: 'flat' | 'raised'
   /** Replaces the mark entirely — a resolved favicon, a spinner. */
   children?: ReactNode
   /** The monogram's source, and what a screen reader gets. */
@@ -38,7 +40,7 @@ interface AvatarChipProps extends Omit<ComponentPropsWithoutRef<'span'>, 'childr
 const GLYPH_CLASS = 'size-[58%]'
 
 export const AvatarChip = forwardRef<HTMLSpanElement, AvatarChipProps>(function AvatarChip(
-  { brand, children, className, name, overlay, style, ...rest },
+  { brand, children, className, name, overlay, style, variant = 'flat', ...rest },
   ref
 ) {
   const Icon = brand?.Icon
@@ -50,18 +52,21 @@ export const AvatarChip = forwardRef<HTMLSpanElement, AvatarChipProps>(function 
         // caller painting a raster mark clips at its own layer.
         'relative inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
         !brand && 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)',
+        variant === 'raised' && 'shadow-avatar-raised',
         className
       )}
+      data-variant={variant}
       ref={ref}
-      style={
-        brand
-          ? {
-              backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)`,
-              color: brand.monochrome ? undefined : brand.color,
-              ...style
-            }
-          : style
-      }
+      style={{
+        ...(brand ? {
+          backgroundColor: `color-mix(in srgb, ${brand.color} ${variant === 'raised' ? 30 : 16}%, transparent)`,
+          color: brand.monochrome ? undefined : brand.color
+        } : {}),
+        ...(variant === 'raised' ? {
+          backgroundImage: 'linear-gradient(145deg, color-mix(in srgb, var(--ui-text-primary) 22%, transparent), transparent 65%)'
+        } : {}),
+        ...style
+      }}
       {...rest}
     >
       {children ?? (Icon ? <Icon aria-hidden className={GLYPH_CLASS} /> : (brand?.monogram ?? monogramFor(name)))}

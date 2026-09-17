@@ -7,6 +7,7 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import { PageSearchShell } from '../page-search-shell'
 
@@ -75,6 +76,7 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 
 describe('PluginsTab', () => {
   beforeEach(() => {
+  stubResizeObserver()
     $pluginRecords.set({})
     $agentPlugins.set([])
     $agentPluginsStatus.set('ready')
@@ -272,6 +274,7 @@ describe('PluginsTab', () => {
       repo: 'https://github.com/example/plugins-monorepo',
       subdir: 'packages/nested-plugin'
     }
+
     seedCatalog([entry])
     renderPlugins({ profile: null })
 
@@ -289,6 +292,7 @@ describe('PluginsTab', () => {
 
 describe('PluginsTab catalog UX', () => {
   beforeEach(() => {
+  stubResizeObserver()
     $agentPlugins.set([])
     $agentPluginsStatus.set('ready')
     $catalogCardView.set(false)
@@ -303,6 +307,7 @@ describe('PluginsTab catalog UX', () => {
       ok: true,
       json: async () => [weatherEntry, { ...weatherEntry, name: 'garden-plugin', category: 'garden', description: 'Garden planning' }]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
     await act(async () => { renderPlugins({ profile: null }) })
 
@@ -332,6 +337,7 @@ describe('PluginsTab catalog UX', () => {
     const fetchCatalog = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
+
     vi.stubGlobal('fetch', fetchCatalog)
     await act(async () => { renderPlugins({ profile: null }) })
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))

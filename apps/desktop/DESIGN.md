@@ -388,6 +388,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
   for hero/brand moments; don't reintroduce decorative star/sparkle icons.
 
+`AvatarChip` defaults to a flat identity chip. Capability catalog cards use its
+opt-in `raised` variant: a brand tint, upper highlight, beveled lower edge, and
+`--shadow-avatar-raised` contact shadow. The compact glyph has depth without
+animation, remote image fetches, or changing the card's hit target. Keep that
+geometry in the primitive and its token; other avatar surfaces remain flat.
+
 ## Motion
 
 - Visible windows keep animating when another app takes focus. Hidden/minimized

@@ -25,6 +25,12 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ru = defineLocale({
   catalog: {
+    whatItDoes: 'Что делает',
+    noDescription: 'Описание не предоставлено. Откройте подробности.',
+    previousCategory: 'Предыдущая категория',
+    nextCategory: 'Следующая категория',
+    chooseCategory: 'Выберите категорию',
+
     listView: 'Список',
     cardView: 'Карточки',
     installTitle: (name: string) => `Установить «${name}»?`,

@@ -138,6 +138,12 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
 
+  /* Beveled identity chips: highlight, lower edge, then a small contact shadow. */
+  --shadow-avatar-raised:
+    inset 0 1px 0 color-mix(in srgb, #fff 35%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 15%, transparent),
+    0 2px 0 color-mix(in srgb, currentColor 45%, var(--dt-background)),
+    0 3px 5px color-mix(in srgb, #000 22%, transparent);
   --shadow-xs: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-sm:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 6%, transparent),

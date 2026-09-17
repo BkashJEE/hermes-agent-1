@@ -60,6 +60,12 @@ interface AuxTaskCopy {
 
 export interface Translations {
   catalog: {
+    whatItDoes: string
+    noDescription: string
+    previousCategory: string
+    nextCategory: string
+    chooseCategory: string
+
     listView: string
     cardView: string
     installTitle: (name: string) => string

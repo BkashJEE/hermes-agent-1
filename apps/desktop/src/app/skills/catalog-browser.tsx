@@ -20,6 +20,8 @@ import { PanelEmpty } from '../overlays/panel'
 import { prettyName } from '../settings/helpers'
 
 import type { CapabilityView } from './capability-tabs'
+import { CatalogCard } from './catalog-card'
+import { CatalogCategories } from './catalog-categories'
 import { type CatalogEntry, type CatalogKind, useCatalog } from './catalog-data'
 import { $catalogCardView } from './store'
 
@@ -80,6 +82,20 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     return [...values].sort((a, b) => a[1].localeCompare(b[1]))
   }, [entries, source])
 
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    let total = 0
+
+    for (const entry of entries) {
+      if ((source === 'all' || entry.source === source) && (!deferredQuery || entry.search.includes(deferredQuery))) {
+        counts.set(entry.category, (counts.get(entry.category) ?? 0) + 1)
+        total += 1
+      }
+    }
+
+    return { counts, total }
+  }, [entries, source, deferredQuery])
+
   const filtered = useMemo(() => entries.filter(entry =>
     (source === 'all' || entry.source === source) &&
     (category === 'all' || entry.category === category) &&
@@ -108,7 +124,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     resetSelection()
   }
 
-  const installButton = (entry: CatalogEntry) => {
+  const installButton = (entry: CatalogEntry, compact = false) => {
     const installed = isInstalled(entry)
     const installing = isInstalling?.(entry) ?? false
 
@@ -119,7 +135,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         }
 
         onInstall(entry)
-      }} size="sm" variant={installed ? 'secondary' : 'default'}>
+      }} size={compact ? 'xs' : 'sm'} variant={installed ? 'secondary' : 'default'}>
         <ActionStatus
           busy={t.skills.hub.installing}
           done={c.installed}
@@ -223,6 +239,13 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           value={cardView ? 'cards' : 'list'}
         />
       </div>}
+      {view === 'browse' && <CatalogCategories
+        categories={categories}
+        counts={categoryCounts.counts}
+        onChange={value => { setCategory(value); resetSelection() }}
+        total={categoryCounts.total}
+        value={category}
+      />}
       <div className="min-h-0 flex-1">
         {isPending && view === 'browse' && !entries.length ? <PageLoader label={t.skills.loading} /> : error && !entries.length ? (
           <div className="grid h-full place-items-center p-5">
@@ -237,33 +260,18 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             <div className="flex h-full min-h-0 flex-col px-3 pb-3" data-catalog-cards={kind}>
               <ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" key={`${source}:${category}:${deferredQuery}`}>
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-3 py-2">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,12.5rem),1fr))] gap-2.5 py-2">
                   {filtered.slice(0, limit).map(entry => (
-                    <article className="row-hover flex min-w-0 flex-col overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)" data-catalog-card key={entry.id}>
-                      <RowButton
-                        aria-haspopup="dialog"
-                        aria-label={entry.name}
-                        className="flex min-w-0 flex-1 cursor-pointer flex-col gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-primary focus-visible:-outline-offset-2"
-                        onClick={event => {
-                          selectedCardRef.current = event.currentTarget
-                          setSelectedId(entry.id)
-                          setDetailOpen(true)
-                        }}
-                      >
-                        <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          <Codicon name={kind === 'plugins' ? 'extensions' : 'book'} size="1.25rem" />
-                          <span className="min-w-0 flex-1 truncate">{prettyName(entry.source)}</span>
-                          {entry.stars !== null && <span className="shrink-0">☆ {entry.stars.toLocaleString()}</span>}
-                        </span>
-                        <span className="line-clamp-2 break-words text-[length:var(--conversation-text-font-size)] font-semibold leading-snug">{entry.name}</span>
-                        <span className="line-clamp-3 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">{entry.description}</span>
-                        <span className="mt-auto w-full truncate pt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{entry.author || prettyName(entry.source)}</span>
-                      </RowButton>
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-4">
-                        <Badge variant="muted">{prettyName(entry.categoryLabel)}</Badge>
-                        {installButton(entry)}
-                      </div>
-                    </article>
+                    <CatalogCard
+                      action={installButton(entry, true)}
+                      entry={entry}
+                      key={entry.id}
+                      onOpen={event => {
+                        selectedCardRef.current = event.currentTarget
+                        setSelectedId(entry.id)
+                        setDetailOpen(true)
+                      }}
+                    />
                   ))}
                 </div>
                 {filtered.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}

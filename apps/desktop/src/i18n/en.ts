@@ -4,6 +4,12 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   catalog: {
+    whatItDoes: 'What it does',
+    noDescription: 'No summary provided. Open details to review this item.',
+    previousCategory: 'Previous category',
+    nextCategory: 'Next category',
+    chooseCategory: 'Choose category',
+
     listView: 'List view',
     cardView: 'Card view',
     installTitle: (name: string) => `Install “${name}”?`,
