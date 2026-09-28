@@ -277,9 +277,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // Primary renderer → main → side window: that question's answer, or why
     // it failed.
     reply: payload => ipcRenderer.send('hermes:side-chat:reply', payload),
-    // Side window subscribes to the conversation it is asking about. Main
-    // caches the latest context so a window that spawns after the push still
-    // boots knowing which chat it belongs to.
+    // Side window PULLS the conversation on mount. It cannot rely on a push:
+    // the window mounts through a dynamic import, so `did-finish-load` fires
+    // before React has subscribed and a one-shot push is lost — which left the
+    // window stuck on "Connecting…" with a dead composer.
+    getContext: () => ipcRenderer.invoke('hermes:side-chat:context:get'),
+    // ...and subscribes for LATER opens, when `/btw` runs again while the
+    // window is already up. That push is safe: the renderer is mounted.
     onContext: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:side-chat:context', listener)

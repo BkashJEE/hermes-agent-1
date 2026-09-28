@@ -223,7 +223,10 @@ declare global {
         ask: (payload: SideChatAsk) => void
         // Primary renderer → main → side window: the answer, or the failure.
         reply: (payload: SideChatReply) => void
-        // Side window subscribes to the conversation it is asking about.
+        // Side window pulls the conversation on mount (a push would race the
+        // dynamic import that mounts it).
+        getContext: () => Promise<null | SideChatContext>
+        // ...and subscribes for later opens, when the window is already up.
         onContext: (callback: (context: SideChatContext) => void) => () => void
         // Primary renderer subscribes to questions typed in the side window.
         onAsk: (callback: (payload: SideChatAsk) => void) => () => void

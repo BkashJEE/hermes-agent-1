@@ -7,9 +7,10 @@ import { SideChatApp } from './side-chat-app'
 
 // The shell the window talks to. Both `onContext` and `onReply` capture their
 // subscriber so a test can push the IPC traffic main would send.
-function stubShell() {
+function stubShell(pulled: null | SideChatContext = null) {
   const ask = vi.fn<(payload: SideChatAsk) => void>()
   const close = vi.fn()
+  const getContext = vi.fn(async () => pulled)
 
   const listeners: {
     context?: (context: SideChatContext) => void
@@ -22,6 +23,7 @@ function stubShell() {
       sideChat: {
         ask,
         close,
+        getContext,
         onContext: (callback: (context: SideChatContext) => void) => {
           listeners.context = callback
 
@@ -41,6 +43,7 @@ function stubShell() {
   return {
     ask,
     close,
+    getContext,
     pushContext: (context: Partial<SideChatContext> & { sessionId: string }) =>
       act(() => listeners.context?.({ question: '', title: '', ...context })),
     pushReply: (reply: SideChatReply) => act(() => listeners.reply?.(reply))
@@ -126,5 +129,41 @@ describe('SideChatApp', () => {
     fireEvent.click(screen.getByLabelText('Close side chat'))
 
     expect(shell.close).toHaveBeenCalled()
+  })
+})
+
+describe('SideChatApp context delivery', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  // Regression: main used to PUSH the context on `did-finish-load`. This window
+  // mounts through a dynamic import, so that fired before the subscription
+  // existed and the push was lost — the window sat on "Connecting…" with a dead
+  // composer and the `/btw` question was never asked. Caught by the e2e, not by
+  // the unit tests, because only a real window has the import delay.
+  it('pulls the conversation on mount rather than waiting for a push', async () => {
+    const seeded = stubShell({ question: 'which file?', sessionId: 's1', title: 'Fix the build' })
+
+    render(<SideChatApp />)
+
+    expect(seeded.getContext).toHaveBeenCalled()
+    await screen.findByText('which file?')
+    expect(seeded.ask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', text: 'which file?' }))
+    expect((screen.getByLabelText('Ask a side question') as HTMLTextAreaElement).disabled).toBe(false)
+  })
+
+  it('stays usable when there is nothing to pull yet', async () => {
+    const empty = stubShell(null)
+
+    render(<SideChatApp />)
+
+    await act(async () => undefined)
+    expect(empty.ask).not.toHaveBeenCalled()
+    // A later push still arrives — that is what a second `/btw` sends.
+    empty.pushContext({ question: 'late question', sessionId: 's2' })
+    expect(empty.ask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's2', text: 'late question' }))
   })
 })

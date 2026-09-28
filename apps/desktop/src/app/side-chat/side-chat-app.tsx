@@ -3,6 +3,7 @@ import { useEffect, useMemo, useReducer, useRef } from 'react'
 import { isSubmitEnter } from '@/lib/ime'
 import {
   initialSideChatState,
+  type SideChatContext,
   type SideChatEvent,
   sideChatReducer,
   type SideChatState,
@@ -46,20 +47,34 @@ export function SideChatApp() {
 
   useEffect(() => {
     const api = window.hermesDesktop?.sideChat
+    let live = true
 
-    const offContext = api?.onContext(context => {
-      if (context?.sessionId) {
-        dispatch({
-          context: {
-            question: typeof context.question === 'string' ? context.question : '',
-            sessionId: context.sessionId,
-            title: typeof context.title === 'string' ? context.title : ''
-          },
-          type: 'context'
-        })
-        requestAnimationFrame(() => composerRef.current?.focus())
+    const applyContext = (context: null | SideChatContext | undefined) => {
+      if (!live || !context?.sessionId) {
+        return
       }
-    })
+
+      dispatch({
+        context: {
+          question: typeof context.question === 'string' ? context.question : '',
+          sessionId: context.sessionId,
+          title: typeof context.title === 'string' ? context.title : ''
+        },
+        type: 'context'
+      })
+      requestAnimationFrame(() => composerRef.current?.focus())
+    }
+
+    // PULL first. A push from main cannot be relied on for the first delivery:
+    // this window mounts through a dynamic import, so the main process's
+    // `did-finish-load` fires before this subscription exists and a one-shot
+    // push is simply lost — which left the window on "Connecting…" with a dead
+    // composer and the `/btw` question never asked.
+    void api?.getContext?.().then(applyContext).catch(() => undefined)
+
+    // The subscription covers LATER opens — `/btw` running again while this
+    // window is already up. By then the renderer is mounted, so a push lands.
+    const offContext = api?.onContext(applyContext)
 
     const offReply = api?.onReply(reply => {
       if (reply?.askId) {
@@ -77,6 +92,7 @@ export function SideChatApp() {
     composerRef.current?.focus()
 
     return () => {
+      live = false
       offContext?.()
       offReply?.()
     }

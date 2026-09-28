@@ -15263,12 +15263,10 @@ function spawnSideChatWindow() {
     }
   })
 
-  // Replay the conversation as soon as the page can hear it.
-  win.webContents.on('did-finish-load', () => {
-    if (!win.isDestroyed() && sideChatContext) {
-      win.webContents.send('hermes:side-chat:context', sideChatContext)
-    }
-  })
+  // No context push here, deliberately. `did-finish-load` fires before the
+  // renderer has subscribed — it mounts through a dynamic import — so the push
+  // was lost and the window sat on "Connecting…" with a dead composer forever.
+  // The renderer pulls instead (`hermes:side-chat:context:get`).
 
   attachRendererConsoleCapture(win, 'side-chat', rememberLog)
   loadWindowUrl(win, sideChatUrl(), 'Side chat')
@@ -18135,6 +18133,17 @@ ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
 // electron/side-chat.ts + store/side-chat.
 ipcMain.handle('hermes:side-chat:open', async (event, context) =>
   openSideChatWindow(context, event.sender))
+
+// The side window asking which conversation it belongs to, on mount. This is
+// the AUTHORITATIVE delivery; the push below only covers a `/btw` that runs
+// while the window is already up.
+ipcMain.handle('hermes:side-chat:context:get', event => {
+  if (!sideChatWindow || sideChatWindow.isDestroyed() || event.sender !== sideChatWindow.webContents) {
+    return null
+  }
+
+  return sideChatContext
+})
 
 ipcMain.on('hermes:side-chat:close', event => {
   // Only the side chat itself may put the side chat away.
