@@ -1,14 +1,14 @@
 name: bot-forge
 repo: https://github.com/BkashJEE/hermes-bot-forge
-sha: b313916b25aa631af7b473cd0ac1d72737b0aa72
-description: "Say \"make me a <role>\" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback. Then hire a whole crew in one call, ask what is waiting on you, and edit, teach, share and health-check Bots by chatting. Disclosure — spawns the hermes CLI to create and run Bot profiles under HERMES_HOME/profiles/, and installs its own small companion hook plugin (bot-forge-marks, two hooks, no tools) into each Bot profile it manages, enabling it in that profile's config.yaml; never the root profile. Disclosure — when a Bot journals a blocked/failed entry, the plugin emails its title and summary to your own address via the SMTP account in Hermes' EMAIL_* settings (TLS verified; off with notify_blocked or notify_email false); adopt_bots (off by default) installs the companion hook into every profile on load."
+sha: 5a514e91bd06d7b81541d67ec8bfd7cbefeff60f
+description: Say "make me a <role>" and your agent builds that Bot — name, face, SOUL.md, memory, tools, skills, routines, Bot Chat — tested, with rollback, and it already knows which repo its work lives in. Bots acknowledge what you asked with a reaction, keep a factual journal, email you when blocked, and can take their own screen on a Linux gateway so you watch and take over at a login. Hire a crew, then manage them by chatting.
 maintainer: BkashJEE
 tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/BkashJEE/hermes-bot-forge#readme
-version: "0.15.3"
-image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/b313916b25aa631af7b473cd0ac1d72737b0aa72/docs/social-preview.png
+version: "0.17.0"
+image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/5a514e91bd06d7b81541d67ec8bfd7cbefeff60f/docs/social-preview.png
 platforms: []
 capabilities:
   provides_tools:
