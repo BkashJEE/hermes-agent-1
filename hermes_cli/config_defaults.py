@@ -2582,6 +2582,12 @@ DEFAULT_CONFIG = {
         # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
         # set_agent_cursor_enabled(false) after start_session when this is on.
         "no_overlay": None,
+        # How the overlay cursor travels to each target (cua-driver 0.34+, trycua/cua#4659). A style name —
+        # signature_arc (driver default), spring_settle, magnetic, comet_swoop, adaptive, classic — or a
+        # mapping {style, timing: native|fitts|fixed, effects: [trail, glow, magnet, ripple, squish]}.
+        # Applied via set_agent_cursor_motion after start_session; cosmetic only and skipped when the
+        # overlay is off. None = cua-driver's own saved default.
+        "cursor_motion": None,
         # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
         # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
         # the per-session YOLO toggle so config can't bypass approvals.

@@ -114,6 +114,49 @@ def _manifest_is_mode_independent(path: str) -> bool:
     version = parsed.get("version") if isinstance(parsed, dict) else None
     return isinstance(version, int) and not isinstance(version, bool) and version >= 3
 
+CURSOR_MOTION_STYLES = ("signature_arc", "spring_settle", "magnetic", "comet_swoop", "adaptive", "classic")
+CURSOR_MOTION_TIMINGS = ("native", "fitts", "fixed")
+CURSOR_MOTION_EFFECTS = ("trail", "glow", "magnet", "ripple", "squish")
+
+
+def _computer_use_cursor_motion() -> Optional[Dict[str, Any]]:
+    """``computer_use.cursor_motion`` as ``set_agent_cursor_motion`` arguments, or None when unset.
+
+    A bare string is a style (``cursor_motion: comet_swoop``); a mapping takes ``style``, ``timing`` and
+    ``effects`` (a list of effect names, or a name -> bool mapping). Unknown values are dropped here with a
+    warning instead of being sent, so a typo never costs the session its cursor (cua-driver rejects the whole
+    call on one bad field). Styles ship in cua-driver 0.34 (trycua/cua#4659); older drivers reject the call,
+    which the best-effort wrapper swallows.
+    """
+    raw = _computer_use_cfg().get("cursor_motion")
+    if not raw:
+        return None
+    cfg = {"style": raw} if isinstance(raw, str) else raw
+    if not isinstance(cfg, dict):
+        logger.warning("computer_use.cursor_motion must be a style name or a mapping; ignoring %r", raw)
+        return None
+    args: Dict[str, Any] = {}
+    for key, allowed in (("style", CURSOR_MOTION_STYLES), ("timing", CURSOR_MOTION_TIMINGS)):
+        val = cfg.get(key)
+        if val is None:
+            continue
+        if val in allowed:
+            args[key] = val
+        else:
+            logger.warning("computer_use.cursor_motion.%s %r is not one of %s; ignoring it", key, val, ", ".join(allowed))
+    effects = cfg.get("effects")
+    if effects is not None:
+        pairs = list(effects.items()) if isinstance(effects, dict) else [(e, True) for e in (effects or [])]
+        chosen = {str(name): bool(on) for name, on in pairs if name in CURSOR_MOTION_EFFECTS}
+        unknown = [str(name) for name, _ in pairs if name not in CURSOR_MOTION_EFFECTS]
+        if unknown:
+            logger.warning("computer_use.cursor_motion.effects %s are not among %s; ignoring them",
+                           unknown, ", ".join(CURSOR_MOTION_EFFECTS))
+        if chosen:
+            args["effects"] = chosen
+    return args or None
+
+
 def _computer_use_max_image_dimension() -> Optional[int]:
     """``computer_use.max_image_dimension`` longest-edge cap (default 1456 = aux-vision downscale); ``0``/negative -> None."""
     try:
@@ -326,6 +369,10 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             if _cua_no_overlay():  # belt-and-suspenders when --no-overlay is unsupported or ignored
                 self._best_effort("set_agent_cursor_enabled failed",
                                   self.set_agent_cursor_enabled, False, cursor_id=self._session_id)
+            else:
+                motion = _computer_use_cursor_motion()
+                if motion:  # how the overlay cursor travels to each target; cosmetic, never gates an action
+                    self._best_effort("set_agent_cursor_motion failed", self.set_agent_cursor_motion, **motion)
 
     def stop(self) -> None:
         # Best-effort end_session so the driver cleans per-session state (cursor overlay, recording ownership,
@@ -389,6 +436,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         """Toggle the agent cursor overlay's visibility for this run."""
         return self._action("set_agent_cursor_enabled",
                             {"enabled": bool(enabled), **({"cursor_id": cursor_id} if cursor_id else {})})
+
+    def set_agent_cursor_motion(self, **motion) -> ActionResult:
+        """Set how this run's overlay cursor moves: ``style`` (one of ``CURSOR_MOTION_STYLES``), ``timing`` and
+        ``effects``. Passed through as-is — cua-driver validates (0.34+; older drivers reject the call)."""
+        return self._action("set_agent_cursor_motion", dict(motion))
 
     def set_config(self, **config) -> ActionResult:
         """Set cua-driver config keys (e.g. ``max_image_dimension``); unknown keys pass through — cua-driver validates."""

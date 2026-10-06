@@ -259,6 +259,39 @@ for the full menu (built-in `arrow` vs `teardrop` silhouette, custom
 SVG / PNG / ICO via `--cursor-icon`, runtime gradient colors, bloom
 halo).
 
+### Cursor motion
+
+cua-driver 0.34 added six ways for the agent cursor to travel to each
+target. Pick one for every Hermes run with `computer_use.cursor_motion`:
+
+```yaml
+# config.yaml
+computer_use:
+  cursor_motion: comet_swoop          # a style name is enough
+  # or the full form:
+  # cursor_motion:
+  #   style: magnetic
+  #   timing: fitts                   # native | fitts | fixed
+  #   effects: [trail, glow, magnet]  # trail, glow, magnet, ripple, squish
+```
+
+| Style | What it looks like |
+|---|---|
+| `signature_arc` (driver default) | One arc, a small follow-through, click squish and ripple |
+| `spring_settle` | Lands with one soft bounce |
+| `magnetic` | Slows near the target, then gets pulled in with a glow |
+| `comet_swoop` | A wider arc with a short trail |
+| `adaptive` | Careful on tiny targets, a swoop on long moves, plain otherwise |
+| `classic` | The pre-0.34 glide |
+
+Hermes sends it with `set_agent_cursor_motion` right after `start_session`,
+so subagents and concurrent runs each get the motion on their own cursor. It
+is cosmetic: it never delays a click or changes where one lands. The setting is
+skipped when the overlay is off (`no_overlay`), a misspelt style or effect is
+dropped with a warning rather than sent, and an older cua-driver that does not
+know the tool just keeps its default motion. Per-call overrides from the model
+(`set_agent_cursor_motion`) still win over the config value.
+
 ## Going deeper — the cua-driver skill pack
 
 Hermes keeps its wrapper skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
