@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `bot-forge-sentinel` | hooks | Enforce a profile's "ask first" rules as `pre_tool_call` directives — refuse what its policy refuses, route the rest to the human approval gate; fails closed, grants no tools |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
