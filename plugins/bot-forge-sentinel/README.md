@@ -1,11 +1,10 @@
 # bot-forge-sentinel
 
-What an agent may actually do, decided outside the model.
+A Bot's reach, decided outside the model.
 
 ## Why
 
-An agent's approval rules normally live in its `SOUL.md` — Bot Forge's `create_agent`
-writes them there, and people write them by hand:
+A profile's approval rules usually live in its `SOUL.md` as prose:
 
 ```
 ## Ask first
@@ -14,15 +13,17 @@ writes them there, and people write them by hand:
 - delete files or data
 ```
 
-That is prose in a system prompt. Nothing checks it, and a Bot that ignores it meets no
+That is text in a system prompt. Nothing checks it, and an agent that ignores it meets no
 obstacle and leaves no record.
 
-That is tolerable while an agent writes files and answers questions. It stops being tolerable
-once one has `computer_use` and `browser` — a real desktop and a real browser session,
-including whatever the user signed into — or once one agent can hand work to another, which
-then acts on instructions it never got from the user.
+That was tolerable when an agent could write files and answer questions. It is not now:
+`bot_screen` gives an agent `computer_use` and `browser` — a real desktop and a real browser
+session, including whatever the user signed into when they handed control back — and agents can
+hand work to one another, so one may act on instructions it did not get from the user.
 
-Sentinel turns those three lines into directives Hermes enforces.
+Sentinel turns those lines into directives Hermes enforces. It originated in the
+[bot-forge](https://github.com/BkashJEE/hermes-bot-forge) plugin, which installs it into each
+Bot it creates, but it needs nothing from bot-forge and is useful in any profile.
 
 ## How
 
@@ -39,7 +40,7 @@ a policy layer must not widen what a Bot can do.
 
 ## Policy
 
-Per profile, in that profile's `config.yaml`:
+Per Bot, in that profile's `config.yaml`:
 
 ```yaml
 plugins:
@@ -56,9 +57,29 @@ With `guard_defaults` on, a tool whose **name** contains a send, spend or delete
 the human gate. The match is on word parts, not substrings, so `undelete_draft` and
 `posture_report` are not caught.
 
-Deliberately about the name: a tool called `send_email` is asking to send whatever its
-arguments say, and a policy layer that needed to understand every tool's arguments would
-understand none of them. Argument-level rules are a later question — see the design note.
+## "May email me, not anyone else"
+
+A tool-name gate cannot say that, so limits name the argument and the values that are fine:
+
+```yaml
+bot-forge-sentinel:
+  limits:
+    send_email:
+      to: ["me@example.com"]
+```
+
+A call whose limited arguments are all within their lists is **allowed without asking** — the
+user already said that shape is fine, and asking again just trains them to click yes. One
+outside its list is refused, and the message names the argument and the offending value.
+
+Limits are checked before the name lists, because they are the more specific statement:
+"send_email is fine, to this address" has to beat "ask about send_email", or naming the address
+would buy nothing. `refuse` still wins over everything.
+
+An argument that cannot be read — a nested object, a number, a list with a non-string in it —
+falls through to the ordinary gate rather than being permitted. **A value we cannot read is a
+question, not a yes.** An absent argument does not satisfy a limit either, so omitting `to` is
+not a way to skip the check on `to`.
 
 ## It fails closed
 
@@ -75,9 +96,6 @@ wrong. Adoption failing open is fine. Enforcement failing open is not.
 - **Not a secret store.** A Bot still holds its own `auth.json`.
 - **Not advice to the model.** A rule that only persuades belongs in `SOUL.md`.
 
-Design note and open questions: [`https://github.com/BkashJEE/hermes-bot-forge/blob/main/docs/sentinel.md`](../docs/sentinel.md).
+Design note and open questions: [`docs/sentinel.md`](https://github.com/BkashJEE/hermes-bot-forge/blob/main/docs/sentinel.md) in the source repo.
 
 MIT © Bikash Joshi
-
-Originally built for [hermes-bot-forge](https://github.com/BkashJEE/hermes-bot-forge),
-where it ships into each Bot it creates. Nothing here depends on Bot Forge.

@@ -238,6 +238,69 @@ class TestHook:
 # ---------------------------------------------------------------------------
 # Bundled-plugin discovery
 # ---------------------------------------------------------------------------
+# Argument limits
+# ---------------------------------------------------------------------------
+
+class TestArgumentLimits:
+    """"May email me, not anyone else" — a thing no tool-name gate can express."""
+
+    POLICY = {"ask": ["send_email"], "limits": {"send_email": {"to": ["me@example.com"]}}}
+
+    def test_a_call_within_its_limits_is_allowed_without_asking(self):
+        """The user already said this shape is fine; asking again trains them to click yes."""
+        guard = _load_guard()
+        assert guard.decide("send_email", self.POLICY, {"to": "me@example.com"}) is None
+
+    def test_a_call_outside_its_limits_is_blocked_naming_the_value(self):
+        guard = _load_guard()
+        out = guard.decide("send_email", self.POLICY, {"to": "stranger@example.com"})
+        assert out["action"] == "block"
+        assert "to" in out["message"]
+        assert "stranger@example.com" in out["message"]
+
+    def test_limits_beat_the_name_lists_but_not_refuse(self):
+        """Naming the address has to beat "ask about send_email", or it buys nothing."""
+        guard = _load_guard()
+        refused = {**self.POLICY, "refuse": ["send_email"]}
+        out = guard.decide("send_email", refused, {"to": "me@example.com"})
+        assert out["action"] == "block"
+
+    @pytest.mark.parametrize("args", [
+        {"to": ["me@example.com", 7]},   # a list with a non-string in it
+        {"to": {"address": "me@example.com"}},  # nested object
+        {"to": 42},                      # not a string at all
+        {},                              # absent is not "within"
+    ])
+    def test_an_argument_we_cannot_read_falls_through_to_the_gate(self, args):
+        """A value we cannot read is a question, not a yes."""
+        guard = _load_guard()
+        out = guard.decide("send_email", self.POLICY, args)
+        assert out is not None and out["action"] == "approve", args
+
+    def test_a_tool_with_no_limit_is_unaffected(self):
+        guard = _load_guard()
+        out = guard.decide("send_email", {"limits": {"other_tool": {"to": ["x"]}}},
+                           {"to": "anyone@example.com"})
+        assert out["action"] == "approve"  # falls to the send category
+
+    def test_a_malformed_limits_block_does_not_permit(self):
+        guard = _load_guard()
+        for limits in ("not-a-dict", ["a"], {"send_email": "not-a-dict"}, {"send_email": {"to": "x"}}):
+            out = guard.decide("send_email", {"ask": ["send_email"], "limits": limits},
+                               {"to": "me@example.com"})
+            assert out is not None and out["action"] in ("approve", "block"), limits
+
+    def test_the_hook_passes_the_call_arguments_through(self):
+        """A limit the manifest advertises but the hook never applies is a rule nothing applied."""
+        mod = _load_plugin_init()
+        ctx = _Ctx(self.POLICY)
+        mod.register(ctx)
+        hook = ctx.hooks["pre_tool_call"]
+        assert hook(tool_name="send_email", args={"to": "me@example.com"}) is None
+        assert hook(tool_name="send_email", args={"to": "stranger@example.com"})["action"] == "block"
+
+
+# ---------------------------------------------------------------------------
 
 class TestPluginDiscovery:
     def test_manifest_declares_registered_hooks(self):
@@ -272,3 +335,28 @@ class TestPluginDiscovery:
         for key, entry in manifest["config_schema"].items():
             assert "type" in entry, key
             assert "description" in entry, key
+
+    def test_the_manifest_and_the_policy_reader_agree_both_ways(self):
+        """A setting the manifest advertises but policy() never reads is a rule the user
+        wrote and nothing applied. `limits` shipped that way once: declared, unit-tested,
+        and absent from the hook's key list, so only an end-to-end check caught it."""
+        import hermes_yaml as yaml
+
+        manifest = yaml.safe_load((_plugin_dir() / "plugin.yaml").read_text(encoding="utf-8"))
+        declared = set(manifest["config_schema"])
+
+        asked = []
+
+        class RecordingCtx(_Ctx):
+            def get_config(self, key, default=None):
+                asked.append(key)
+                return self.config.get(key, default)
+
+        mod = _load_plugin_init()
+        ctx = RecordingCtx()
+        mod.register(ctx)
+        ctx.hooks["pre_tool_call"](tool_name="some_tool", args={})
+
+        read = set(asked)
+        assert declared - read == set(), f"declared but never read: {sorted(declared - read)}"
+        assert read - declared == set(), f"read but never declared: {sorted(read - declared)}"
