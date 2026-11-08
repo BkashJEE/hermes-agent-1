@@ -1,0 +1,23 @@
+name: hermes-brief
+repo: https://github.com/BkashJEE/hermes-brief
+sha: d12ac0e5da2429722f9560cd1963d7edc6ba18d0
+title: "Hermes Brief"
+description: "Save pages, X posts and YouTube videos from Chrome and Hermes reads each one and writes you a short brief: what it is, the key points, why it matters, a next step, and timestamps for videos. Save with the companion Chrome extension's button, a right-click on any link, or by bookmarking into a Chrome folder named Hermes; briefs land in folders on a Desktop Briefs page, any chat can search them (brief_save, brief_search, brief_get), and brief_digest gives a daily what-you-saved. The extension connects with a 6-digit code from the Briefs page, so no API key goes into the browser. Disclosure — adds routes under /api/plugins/hermes-brief to the Hermes API server; all need the API server's own auth or a device token issued by pairing, except POST /pair, which only answers a valid 6-digit code (5 minutes, single use, five wrong tries cancel all open codes); device tokens are stored hashed and can be disconnected on the Briefs page. The companion extension, loaded unpacked from the same repository, talks only to 127.0.0.1/localhost and reads a page only when you save it. Each saved link costs one host-owned ctx.llm call. Optional What X says (on by default, what_x_says: false turns it off) makes one x_search call per saved link through the host's own tool via ctx.dispatch_tool, using the Grok sign-in of the API server's profile or of the profile named in x_search_profile; without Grok access the card says so and nothing else runs. Links saved without page text are fetched from your machine (the page itself, X's public embed endpoint cdn.syndication.twimg.com, and yt-dlp for video transcripts when installed). The library (URLs, page text, briefs, device-token hashes) is one SQLite file under <hermes root>/plugin-data/hermes-brief shared by all profiles. No telemetry."
+maintainer: BkashJEE
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/BkashJEE/hermes-brief#readme
+version: "0.3.1"
+platforms: []
+known_issues:
+  - Needs the companion Chrome extension from the same repository (load unpacked) and the Hermes API server enabled (API_SERVER_ENABLED). On a multiplexed gateway enable the plugin in the default profile too, then restart the gateway so its routes are added.
+capabilities:
+  provides_tools:
+    - brief_save
+    - brief_search
+    - brief_get
+    - brief_digest
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
