@@ -1,0 +1,18 @@
+name: hermes-nous-wake
+repo: https://github.com/BkashJEE/hermes-nous-wake
+sha: c93416796ca4035583194e2b994d4ba1bcea509f
+title: "Nous Wake"
+description: "The Nous girl wakes up every time you start a new Hermes chat: a three-second moment inside the chat window where an old CRT switches on, she opens her eyes in five steps in the black-and-white Nous manga ink style, and the tube switches off into your chat. Choose every new chat, the first chat of the day, app launch only, or off (Settings > Plugins > Nous Wake); replay it from the status-bar eye or the command palette. A click or any key skips it; reduced motion gets a calm fade. Desktop only: no tools, no network, no model calls. Disclosure — reads the chat window's position through the documented [data-chat-surface] attribute from its own composer slot to draw over that window only; the artwork is derived from the official Nous girl art in hermes-agent (MIT)."
+maintainer: BkashJEE
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/BkashJEE/hermes-nous-wake#readme
+version: "0.1.2"
+image: https://raw.githubusercontent.com/BkashJEE/hermes-nous-wake/8b793e7b63e64c95b67a7704fab4fc295972ac82/docs/nous-wake.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
