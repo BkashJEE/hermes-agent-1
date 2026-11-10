@@ -1,0 +1,20 @@
+name: hermes-nous-calendar
+repo: https://github.com/BkashJEE/hermes-nous-calendar
+sha: 86faaf3decef510dfbdab5f7e8cd6795c7bdc192
+title: "Nous Calendar"
+description: "Never miss a Nous drop. A month calendar of what Nous Research shipped for Hermes Agent, day by day: releases, new official plugins, new catalog plugins, feature PRs and official-plugin updates, with each day's merged-PR count. A Desktop page (/nous-calendar) with a new-drops chip and a notification for releases and new official plugins, /nous-calendar in any chat, the nous_calendar tool, and the hermes nous-calendar CLI. Optional Nous Alerts (hermes nous-calendar alerts on, or the switch on the Desktop page): every new Nous drop reaches every channel connected to Hermes (Telegram, Discord, Slack, WhatsApp, Desktop and the rest) within 15 minutes, with zero model tokens. Disclosure — reads public GitHub data (releases, merged PRs, the plugin catalog) and a public feed of the biggest Hermes posts on X; no model calls; a cache under this plugin's data folder. Turning alerts on writes ~/.hermes/scripts/nous-alerts.sh and creates one no-agent cron job (nous-alerts, every 15 min, --deliver all) by running the hermes cron CLI; alerts off removes both; the first check only records what already exists and sends nothing. No telemetry."
+maintainer: BkashJEE
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/BkashJEE/hermes-nous-calendar#readme
+version: "0.3.0"
+platforms: []
+known_issues:
+  - Nous Alerts delivers through the gateway's cron, so the gateway must be running; the switch on the Desktop page is hidden in the web build.
+capabilities:
+  provides_tools:
+    - nous_calendar
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
